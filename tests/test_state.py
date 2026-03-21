@@ -23,6 +23,7 @@ class TestTypedState:
         contract = BuildContract(
             project_name="test", summary="test",
             goals=["test"], acceptance_criteria=["test"],
+            archetype="python_cli",
         )
         state = BuildState(
             contract=ContractState(data=contract),
@@ -55,6 +56,7 @@ class TestTypedState:
         contract = BuildContract(
             project_name="roundtrip", summary="test",
             goals=["survive serialization"], acceptance_criteria=["test"],
+            archetype="python_cli",
         )
         env = EnvironmentSnapshot(
             os_name="Linux", arch="x86_64",

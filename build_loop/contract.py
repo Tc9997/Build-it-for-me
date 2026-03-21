@@ -174,6 +174,9 @@ class BuildContract(StrictModel):
     # Identity
     project_name: str
     summary: str = Field(description="One-paragraph description of what the project does")
+    archetype: Literal["python_cli", "fastapi_service"] = Field(
+        description="Project archetype — determines which template is used"
+    )
 
     # Scope
     goals: list[str] = Field(description="Concrete things the project MUST do")

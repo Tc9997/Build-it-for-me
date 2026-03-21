@@ -27,6 +27,7 @@ class TestBuildContract:
             summary="A test project",
             goals=["do the thing"],
             acceptance_criteria=["thing is done"],
+            archetype="python_cli",
         )
         assert c.schema_version == SCHEMA_VERSION
         assert c.run_mode == "batch"
@@ -38,6 +39,7 @@ class TestBuildContract:
         c = BuildContract(
             project_name="test", summary="test",
             goals=["test"], acceptance_criteria=["test"],
+            archetype="python_cli",
         )
         assert c.schema_version == "1"
 
@@ -47,12 +49,14 @@ class TestBuildContract:
                 schema_version="99",
                 project_name="test", summary="test",
                 goals=["test"], acceptance_criteria=["test"],
+                archetype="python_cli",
             )
 
     def test_full_contract_with_signals(self):
         c = BuildContract(
             project_name="wine_scraper",
             summary="Scrapes wine auctions",
+            archetype="python_cli",
             goals=["Scrape auction listings", "Parse lot data"],
             non_goals=["Build a recommendation engine"],
             constraints=["Python 3.12", "No Selenium"],
@@ -101,6 +105,7 @@ class TestBuildContract:
             goals=["Serve /health endpoint"],
             acceptance_criteria=["GET /health returns 200"],
             run_mode="service",
+            archetype="python_cli",
         )
         assert c.run_mode == "service"
 
@@ -110,6 +115,7 @@ class TestBuildContract:
                 project_name="test", summary="test",
                 goals=["test"], acceptance_criteria=["test"],
                 run_mode="invalid",
+                archetype="python_cli",
             )
 
 
@@ -151,6 +157,7 @@ class TestSuccessSignalDiscrimination:
         c = BuildContract(
             project_name="test", summary="test",
             goals=["test"], acceptance_criteria=["test"],
+            archetype="python_cli",
             success_signals=[
                 {"type": "cli_exit", "description": "runs", "command": "python"},
                 {"type": "http_probe", "description": "health", "path": "/health"},
@@ -166,6 +173,7 @@ class TestSuccessSignalDiscrimination:
             BuildContract(
                 project_name="test", summary="test",
                 goals=["test"], acceptance_criteria=["test"],
+                archetype="python_cli",
                 success_signals=[
                     {"type": "nonexistent", "description": "bad"},
                 ],
@@ -180,6 +188,7 @@ class TestExtraFieldsRejected:
             BuildContract(
                 project_name="test", summary="test",
                 goals=["test"], acceptance_criteria=["test"],
+                archetype="python_cli",
                 totally_bogus_field="surprise",
             )
 

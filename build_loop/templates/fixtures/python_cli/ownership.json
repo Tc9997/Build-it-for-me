@@ -1,0 +1,10 @@
+{
+  "pyproject.toml": "template_locked",
+  ".gitignore": "template_locked",
+  "requirements.txt": "builder_owned",
+  "src/__init__.py": "template_locked",
+  "src/cli.py": "builder_owned",
+  "src/core.py": "builder_owned",
+  "tests/__init__.py": "template_locked",
+  "tests/conftest.py": "template_locked"
+}

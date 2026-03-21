@@ -32,6 +32,7 @@ def _make_contract(**overrides) -> BuildContract:
     defaults = dict(
         project_name="test", summary="test",
         goals=["test"], acceptance_criteria=["test"],
+        archetype="python_cli",
     )
     defaults.update(overrides)
     return BuildContract(**defaults)

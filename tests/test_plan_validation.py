@@ -13,6 +13,7 @@ def _make_contract(**overrides) -> BuildContract:
         goals=["goal A", "goal B"],
         non_goals=["non-goal X"],
         acceptance_criteria=["test"],
+        archetype="python_cli",
     )
     defaults.update(overrides)
     return BuildContract(**defaults)

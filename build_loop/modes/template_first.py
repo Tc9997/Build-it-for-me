@@ -1,0 +1,366 @@
+"""Template-first mode: the productized, narrow build appliance.
+
+Exactly two archetypes: python_cli, fastapi_service.
+Typed contract, deterministic policy, pinned templates, ownership manifest,
+verifier authority. Reliability-focused.
+
+Pipeline:
+  RESEARCH → CONTRACT → ENVIRONMENT → POLICY → TEMPLATE → PLAN →
+  BUILD+REVIEW → INTEGRATE → WRITE → SETUP → TEST+DEBUG → VERIFY →
+  OPTIMIZE → ACCEPT
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+from rich.console import Console
+from rich.panel import Panel
+
+from build_loop.agents.acceptance import AcceptanceAgent
+from build_loop.agents.builder import BuilderAgent
+from build_loop.agents.debugger import DebuggerAgent
+from build_loop.agents.executor import ExecutorAgent
+from build_loop.agents.integrator import IntegratorAgent
+from build_loop.agents.optimizer import OptimizerAgent
+from build_loop.agents.planner import PlannerAgent
+from build_loop.agents.researcher import ResearcherAgent
+from build_loop.agents.reviewer import ReviewerAgent
+from build_loop.agents.spec_compiler import SpecCompilerAgent
+from build_loop.common.pipeline import (
+    IntegrationFailedError,
+    ModuleRejectedError,
+    PipelineError,
+    build_all,
+    log,
+    optimize,
+    phase,
+    print_final_report,
+    print_plan,
+    read_project_files,
+    save_state,
+    setup_environment,
+    test_and_debug_loop,
+    venv_cmd,
+    write_project,
+)
+from build_loop.contract import BuildContract, CapabilityType
+from build_loop.environment import EnvironmentSnapshot, capture_snapshot
+from build_loop.plan_validation import validate_plan_coverage
+from build_loop.policy import AutonomyMode, PolicyDecision, evaluate_policy
+from build_loop.safety import safe_output_path
+from build_loop.schemas import (
+    BuildState,
+    ContractState,
+    EnvironmentState,
+    PolicyState,
+)
+from build_loop.templates import registry as template_registry
+from build_loop.templates.cache import ensure_cached
+from build_loop.templates.materialize import materialize as materialize_template
+from build_loop.templates.models import OwnershipManifest
+from build_loop.templates.ownership import OwnershipViolationError, check_write_allowed
+from build_loop.templates.registry import RegistryError
+from build_loop.verifier import Verifier
+
+console = Console()
+
+
+class TemplateFirstOrchestrator:
+    """Orchestrates the template-first build pipeline.
+
+    Rejects anything outside python_cli and fastapi_service.
+    All phase gates are hard. Verifier is the authority.
+    """
+
+    def __init__(self, output_dir: str | None = None, confirm_callback=None):
+        self.output_dir = os.path.abspath(output_dir or os.path.join(os.getcwd(), "output"))
+        self.state = BuildState(output_dir=self.output_dir)
+        self._confirm = confirm_callback
+
+        # Sub-agents
+        self.researcher = ResearcherAgent()
+        self.spec_compiler = SpecCompilerAgent()
+        self.planner = PlannerAgent()
+        self.builder = BuilderAgent()
+        self.reviewer = ReviewerAgent()
+        self.integrator = IntegratorAgent()
+        self.executor = ExecutorAgent(self.output_dir)
+        self.debugger = DebuggerAgent()
+        self.verifier = Verifier(self.output_dir)
+        self.optimizer = OptimizerAgent()
+        self.acceptance = AcceptanceAgent()
+
+        # State
+        self.contract: BuildContract | None = None
+        self.env_snapshot: EnvironmentSnapshot | None = None
+        self.policy_decision: PolicyDecision | None = None
+        self._ownership_manifest: OwnershipManifest | None = None
+
+    def run(self, idea: str) -> str:
+        """Run the full template-first pipeline. Returns the output directory."""
+        self.state.idea = idea
+        console.print(Panel(
+            f"[bold]MODE: template_first[/bold]\n{idea}",
+            title="[bold]PROJECT IDEA[/bold]",
+        ))
+
+        try:
+            # Phase 1: Research
+            phase("1", "RESEARCH", "Investigating feasibility and approach...")
+            self.state.research = self.researcher.run(idea)
+            save_state(self.state, self.output_dir)
+
+            # Phase 2: Contract
+            phase("2", "CONTRACT", "Compiling build contract...")
+            research_json = json.dumps(self.state.research.model_dump(), indent=2)
+            self.contract = self.spec_compiler.run(idea, research_json)
+            self.state.contract = ContractState(data=self.contract)
+            save_state(self.state, self.output_dir)
+
+            # Phase 3: Environment
+            phase("3", "ENVIRONMENT", "Capturing host capabilities...")
+            required_tools = [
+                cap.name for cap in self.contract.capability_requirements
+                if cap.type == CapabilityType.SYSTEM_TOOL
+            ]
+            self.env_snapshot = capture_snapshot(
+                output_dir=self.output_dir,
+                required_secrets=self.contract.secrets_required,
+                required_tools=required_tools,
+            )
+            self.state.environment = EnvironmentState(data=self.env_snapshot)
+            save_state(self.state, self.output_dir)
+
+            # Phase 4: Policy
+            phase("4", "POLICY", "Evaluating build feasibility...")
+            self.policy_decision = evaluate_policy(self.contract, self.env_snapshot)
+            self.state.policy = PolicyState(data=self.policy_decision)
+            save_state(self.state, self.output_dir)
+
+            if self.policy_decision.autonomy_mode == AutonomyMode.REFUSE:
+                raise PipelineError(f"Policy refused: {self.policy_decision.reasons}")
+
+            # Phase 5: Template — resolve, cache, materialize
+            phase("5", "TEMPLATE", "Resolving and materializing project template...")
+            self._resolve_and_materialize_template()
+            save_state(self.state, self.output_dir)
+
+            # Phase 6: Plan
+            phase("6", "PLAN", "Decomposing into modules and interfaces...")
+            self._plan(research_json)
+            save_state(self.state, self.output_dir)
+
+            self._checkpoint_gate("plan")
+
+            # Phase 7: Build + Review
+            phase("7", "BUILD", "Building modules with review loop...")
+            build_all(self.state, self.builder, self.reviewer)
+            save_state(self.state, self.output_dir)
+
+            # Phase 8: Integrate
+            phase("8", "INTEGRATE", "Wiring modules together...")
+            self.state.integration = self.integrator.run(
+                self.state.plan, self.state.artifacts
+            )
+            save_state(self.state, self.output_dir)
+            if not self.state.integration.success:
+                raise IntegrationFailedError(
+                    f"Integration failed: {self.state.integration.issues}"
+                )
+
+            # Phase 9: Write (ownership-enforced)
+            phase("9", "WRITE", "Writing project to disk...")
+            write_project(self.state, self.output_dir, self._safe_write)
+            save_state(self.state, self.output_dir)
+
+            self._checkpoint_gate("setup")
+
+            # Phase 10-13: Setup, Test, Verify, Optimize (skippable in DEGRADE)
+            if not self._should_skip("setup"):
+                phase("10", "SETUP", "Installing dependencies...")
+                setup_environment(self.state, self.executor, self._venv_cmd)
+                save_state(self.state, self.output_dir)
+            else:
+                phase("10", "SETUP", "[SKIPPED — degraded mode]")
+
+            if not self._should_skip("test"):
+                phase("11", "TEST & DEBUG", "Running tests and fixing failures...")
+                test_and_debug_loop(
+                    self.state, self.executor, self.debugger,
+                    self._venv_cmd, self._safe_write, self._read_files,
+                )
+                save_state(self.state, self.output_dir)
+            else:
+                phase("11", "TEST & DEBUG", "[SKIPPED — degraded mode]")
+
+            if not self._should_skip("verify"):
+                phase("12", "VERIFY", "Independent verification...")
+                self._verify()
+                save_state(self.state, self.output_dir)
+            else:
+                phase("12", "VERIFY", "[SKIPPED — degraded mode]")
+
+            if not self._should_skip("optimize"):
+                phase("13", "OPTIMIZE", "Optimizing...")
+                optimize(
+                    self.state, self.executor, self.optimizer, self.debugger,
+                    self._venv_cmd, self._safe_write, self._read_files,
+                )
+                save_state(self.state, self.output_dir)
+            else:
+                phase("13", "OPTIMIZE", "[SKIPPED — degraded mode]")
+
+            self._checkpoint_gate("acceptance")
+
+            # Phase 14: Acceptance
+            phase("14", "ACCEPTANCE", "Final acceptance...")
+            self._acceptance_check()
+            save_state(self.state, self.output_dir)
+
+        except (ModuleRejectedError, IntegrationFailedError, PipelineError, OwnershipViolationError) as e:
+            console.print(f"\n[bold red]PIPELINE STOPPED: {e}[/bold red]")
+            save_state(self.state, self.output_dir)
+
+        print_final_report(self.state)
+        return self.output_dir
+
+    # ------------------------------------------------------------------
+    # Template
+    # ------------------------------------------------------------------
+
+    def _resolve_and_materialize_template(self) -> None:
+        if not self.contract:
+            raise PipelineError("No contract")
+
+        try:
+            entry = template_registry.resolve(self.contract.archetype)
+        except RegistryError as e:
+            raise PipelineError(f"Template resolution failed: {e}")
+
+        if not template_registry.verify_commit(entry):
+            raise PipelineError(
+                f"Template integrity check failed for {entry.template_id}"
+            )
+
+        cached = ensure_cached(entry)
+        contract_hash = self.contract.canonical_hash()
+        self._ownership_manifest = materialize_template(
+            cached_template=cached,
+            output_dir=Path(self.output_dir),
+            project_name=self.contract.project_name,
+            summary=self.contract.summary,
+            template_id=entry.template_id,
+            pinned_commit=entry.pinned_commit,
+            contract_hash=contract_hash,
+        )
+        log("template", f"{len(self._ownership_manifest.files)} files materialized")
+
+    # ------------------------------------------------------------------
+    # Plan (contract-driven, template-aware)
+    # ------------------------------------------------------------------
+
+    def _plan(self, research_json: str) -> None:
+        contract_hash = self.contract.canonical_hash()
+        template_files = sorted(self._ownership_manifest.files.keys()) if self._ownership_manifest else []
+
+        plan_context = (
+            f"BUILD CONTRACT (contract_hash={contract_hash}):\n"
+            f"{json.dumps(self.contract.model_dump(), indent=2)}\n\n"
+            f"TEMPLATE FILES ALREADY IN PROJECT (do not recreate these):\n"
+            f"{json.dumps(template_files, indent=2)}\n\n"
+            f"RESEARCH FINDINGS:\n{research_json}"
+        )
+        self.state.plan = self.planner.run(plan_context)
+        if self.contract:
+            self.state.plan.run_mode = self.contract.run_mode
+            self.state.plan.archetype = self.contract.archetype
+            if not self.state.plan.contract_hash:
+                self.state.plan.contract_hash = contract_hash
+
+        validation = validate_plan_coverage(self.state.plan, self.contract)
+        for w in validation.warnings:
+            console.print(f"  [dim]{w}[/dim]")
+        if not validation.valid:
+            for e in validation.errors:
+                console.print(f"  [bold red]{e}[/bold red]")
+            raise PipelineError(f"Plan does not cover contract: {validation.errors}")
+
+        print_plan(self.state.plan)
+
+    # ------------------------------------------------------------------
+    # Verify + Acceptance
+    # ------------------------------------------------------------------
+
+    def _verify(self) -> None:
+        if not self.contract:
+            return
+        run_cmd = None
+        if self.state.plan and self.state.plan.run_command and self.contract.run_mode == "service":
+            run_cmd = self._venv_cmd(self.state.plan.run_command)
+        verification = self.verifier.run(self.contract, run_command=run_cmd)
+        self.state.verification = verification.model_dump()
+        self._verification_result = verification
+
+    def _acceptance_check(self) -> None:
+        verification = getattr(self, "_verification_result", None)
+        smoke_result = None
+        if self.state.plan and self.state.plan.run_command:
+            run_cmd = self._venv_cmd(self.state.plan.run_command)
+            run_mode = getattr(self.state.plan, "run_mode", "batch")
+            smoke_result = self.executor.smoke_test(run_cmd, run_mode=run_mode)
+            self.state.exec_history.append(smoke_result)
+
+        self.state.acceptance = self.acceptance.run(
+            idea=self.state.idea,
+            plan=self.state.plan,
+            project_files=self._read_files(),
+            verification=verification,
+            smoke_result=smoke_result,
+        )
+
+    # ------------------------------------------------------------------
+    # Policy enforcement
+    # ------------------------------------------------------------------
+
+    def _checkpoint_gate(self, phase_name: str) -> None:
+        if not self.policy_decision:
+            return
+        if self.policy_decision.autonomy_mode != AutonomyMode.CHECKPOINT:
+            return
+        if phase_name not in self.policy_decision.require_confirmation:
+            return
+
+        console.print(f"\n  [bold yellow]CHECKPOINT: confirmation required before '{phase_name}'[/bold yellow]")
+        if self._confirm and self._confirm(phase_name, self.policy_decision.reasons):
+            return
+        raise PipelineError(
+            f"Checkpoint at '{phase_name}' — no confirmation. "
+            f"Reasons: {self.policy_decision.reasons}"
+        )
+
+    def _should_skip(self, phase_name: str) -> bool:
+        if not self.policy_decision:
+            return False
+        if self.policy_decision.autonomy_mode != AutonomyMode.DEGRADE:
+            return False
+        return phase_name in set(self.policy_decision.skip_phases)
+
+    # ------------------------------------------------------------------
+    # File operations (ownership-enforced)
+    # ------------------------------------------------------------------
+
+    def _safe_write(self, relative_path: str, content: str) -> None:
+        resolved = safe_output_path(self.output_dir, relative_path)
+        if self._ownership_manifest:
+            check_write_allowed(self._ownership_manifest, relative_path)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        resolved.write_text(content)
+
+    def _venv_cmd(self, cmd: str) -> str:
+        return venv_cmd(self.output_dir, cmd)
+
+    def _read_files(self) -> dict[str, str]:
+        return read_project_files(self.output_dir)

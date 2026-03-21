@@ -125,6 +125,10 @@ class BuildPlan(BaseModel):
     schema_version: Literal["1"] = "1"
     project_name: str
     description: str
+    archetype: str = Field(
+        default="",
+        description="Project archetype (python_cli or fastapi_service)"
+    )
 
     # Contract traceability
     contract_hash: str = Field(
