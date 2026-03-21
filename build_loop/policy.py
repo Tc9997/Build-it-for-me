@@ -105,9 +105,9 @@ def evaluate_policy(
             blocked.append("docker")
             reasons.append(
                 "Contract requires containerized services but Docker is not available. "
-                "External service setup will be skipped."
+                "Setup, test, and optimize phases will be skipped."
             )
-            skip.append("external_services")
+            skip.extend(["setup", "test", "optimize"])
 
         needs_network = any(
             kw in dep.lower()
@@ -119,9 +119,9 @@ def evaluate_policy(
             blocked.append("network")
             reasons.append(
                 "Contract requires network access but network is unavailable. "
-                "API-dependent features will be degraded."
+                "Test and optimize phases will be skipped."
             )
-            skip.append("network_dependent_tests")
+            skip.extend(["test", "optimize"])
 
     # ----- Rule: service mode needs process management -----
     if contract.run_mode == "service":

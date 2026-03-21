@@ -1,8 +1,12 @@
 """EnvironmentSnapshot: captures host reality before policy decisions.
 
-This is deterministic — no LLM calls, no network. It inspects the local
-machine and reports what's actually available so the policy engine can
-reason about what's buildable HERE, not just in theory.
+No LLM calls. Bounded side effects: runs tool --version subprocesses,
+performs a DNS lookup to check network availability, and writes/deletes
+a temporary file to test output directory writability. All side effects
+are read-like probes that leave no lasting state.
+
+The policy engine consumes this snapshot to decide what's feasible on
+this machine right now, not in the abstract.
 
 Schema version is explicit for journal/cache compatibility.
 """
@@ -74,7 +78,11 @@ def capture_snapshot(
     output_dir: str = ".",
     required_secrets: list[str] | None = None,
 ) -> EnvironmentSnapshot:
-    """Capture the current environment. Pure inspection, no side effects."""
+    """Capture the current environment.
+
+    Bounded side effects: runs --version subprocesses, DNS lookup,
+    and a write/delete probe on the output directory.
+    """
     required_secrets = required_secrets or []
 
     snap = EnvironmentSnapshot(

@@ -18,6 +18,7 @@ from build_loop.agents.architect import (
 from build_loop.agents.executor import ExecutorAgent
 from build_loop.contract import BuildContract
 from build_loop.environment import EnvironmentSnapshot
+from build_loop.agents.architect import PipelineError
 from build_loop.policy import AutonomyMode, PolicyDecision
 from build_loop.schemas import (
     BuildArtifact,
@@ -213,3 +214,237 @@ class TestExecutorSafety:
         executor = ExecutorAgent(str(tmp_path))
         result = executor.run_command(f"{sys.executable} --version")
         assert result.success
+
+
+# =========================================================================
+# Helper to build a fully-stubbed architect for policy tests
+# =========================================================================
+
+def _make_stubbed_architect(policy_decision, output_dir="/tmp/test-build-loop-policy"):
+    """Create an ArchitectAgent with all LLM agents stubbed, using the given policy."""
+    agent = ArchitectAgent(output_dir=output_dir)
+
+    agent.researcher.run = MagicMock(return_value=ResearchReport(
+        feasibility="test", recommended_stack=["python"],
+    ))
+    agent.spec_compiler.run = MagicMock(return_value=BuildContract(
+        project_name="test", summary="test",
+        goals=["test"], acceptance_criteria=["test"],
+    ))
+    agent.planner.run = MagicMock(return_value=BuildPlan(
+        project_name="test", description="test", tech_stack=["python"],
+        modules=[], build_order=[],
+    ))
+    agent.integrator.run = MagicMock(return_value=IntegrationResult(
+        modules_integrated=[], success=True,
+    ))
+
+    # Inject policy decision directly
+    agent.policy_decision = policy_decision
+    # Override evaluate_policy to return our decision
+    return agent
+
+
+# =========================================================================
+# CHECKPOINT mode stops before side-effect phases
+# =========================================================================
+
+class TestCheckpointEnforcement:
+    """CHECKPOINT must stop before side-effect phases unless confirmed."""
+
+    def test_checkpoint_stops_without_callback(self):
+        """No confirm callback → pipeline stops at checkpoint (fail-closed)."""
+        agent = ArchitectAgent(output_dir="/tmp/test-build-loop-ckpt")
+
+        agent.researcher.run = MagicMock(return_value=ResearchReport(
+            feasibility="test", recommended_stack=["python"],
+        ))
+        agent.spec_compiler.run = MagicMock(return_value=BuildContract(
+            project_name="test", summary="test",
+            goals=["test"], acceptance_criteria=["test"],
+            secrets_required=["MISSING_KEY"],
+        ))
+
+        with patch("build_loop.agents.architect.capture_snapshot") as mock_snap:
+            mock_snap.return_value = EnvironmentSnapshot(
+                os_name="Test", arch="x86_64",
+                python_version="3.12", python_path="/usr/bin/python3",
+                output_dir_writable=True,
+                secrets_missing=["MISSING_KEY"],
+            )
+
+            # No confirm callback — should stop at checkpoint
+            agent._confirm = None
+
+            agent.planner.run = MagicMock(return_value=BuildPlan(
+                project_name="test", description="test", tech_stack=["python"],
+                modules=[], build_order=[],
+            ))
+            agent.integrator.run = MagicMock(return_value=IntegrationResult(
+                modules_integrated=[], success=True,
+            ))
+
+            agent._build_all = MagicMock()
+            agent._write_project = MagicMock()
+            # These should never be called (checkpoint blocks before setup)
+            agent._setup_environment = MagicMock()
+            agent._test_and_debug_loop = MagicMock()
+
+            agent.run("test idea")
+
+            agent._setup_environment.assert_not_called()
+            agent._test_and_debug_loop.assert_not_called()
+
+    def test_checkpoint_proceeds_with_confirmation(self):
+        """With a confirm callback that returns True, pipeline proceeds past checkpoints."""
+        confirm_calls = []
+
+        def confirm_yes(phase, reasons):
+            confirm_calls.append(phase)
+            return True
+
+        agent = ArchitectAgent(
+            output_dir="/tmp/test-build-loop-ckpt-yes",
+            confirm_callback=confirm_yes,
+        )
+
+        agent.researcher.run = MagicMock(return_value=ResearchReport(
+            feasibility="test", recommended_stack=["python"],
+        ))
+        agent.spec_compiler.run = MagicMock(return_value=BuildContract(
+            project_name="test", summary="test",
+            goals=["test"], acceptance_criteria=["test"],
+            secrets_required=["MISSING_KEY"],
+        ))
+
+        with patch("build_loop.agents.architect.capture_snapshot") as mock_snap:
+            mock_snap.return_value = EnvironmentSnapshot(
+                os_name="Test", arch="x86_64",
+                python_version="3.12", python_path="/usr/bin/python3",
+                output_dir_writable=True,
+                secrets_missing=["MISSING_KEY"],
+            )
+
+            agent.planner.run = MagicMock(return_value=BuildPlan(
+                project_name="test", description="test", tech_stack=["python"],
+                modules=[], build_order=[],
+            ))
+            agent.integrator.run = MagicMock(return_value=IntegrationResult(
+                modules_integrated=[], success=True,
+            ))
+
+            # Stub build and side-effect phases
+            agent._build_all = MagicMock()
+            agent._write_project = MagicMock()
+            agent._setup_environment = MagicMock()
+            agent._test_and_debug_loop = MagicMock()
+            agent._optimize = MagicMock()
+            agent._acceptance_check = MagicMock()
+
+            agent.run("test idea")
+
+            # Confirm callback was called for the checkpoint phases
+            assert len(confirm_calls) > 0
+            # Side-effect phases DID execute because confirmation was given
+            agent._setup_environment.assert_called_once()
+
+    def test_checkpoint_rejected_stops_pipeline(self):
+        """Confirm callback returns False → pipeline stops."""
+        def confirm_no(phase, reasons):
+            return False
+
+        agent = ArchitectAgent(
+            output_dir="/tmp/test-build-loop-ckpt-no",
+            confirm_callback=confirm_no,
+        )
+
+        agent.researcher.run = MagicMock(return_value=ResearchReport(
+            feasibility="test", recommended_stack=["python"],
+        ))
+        agent.spec_compiler.run = MagicMock(return_value=BuildContract(
+            project_name="test", summary="test",
+            goals=["test"], acceptance_criteria=["test"],
+            secrets_required=["MISSING_KEY"],
+        ))
+
+        with patch("build_loop.agents.architect.capture_snapshot") as mock_snap:
+            mock_snap.return_value = EnvironmentSnapshot(
+                os_name="Test", arch="x86_64",
+                python_version="3.12", python_path="/usr/bin/python3",
+                output_dir_writable=True,
+                secrets_missing=["MISSING_KEY"],
+            )
+
+            agent.planner.run = MagicMock(return_value=BuildPlan(
+                project_name="test", description="test", tech_stack=["python"],
+                modules=[], build_order=[],
+            ))
+
+            agent.integrator.run = MagicMock(return_value=IntegrationResult(
+                modules_integrated=[], success=True,
+            ))
+
+            agent._build_all = MagicMock()
+            agent._write_project = MagicMock()
+            agent._setup_environment = MagicMock()
+
+            agent.run("test idea")
+
+            # Setup should not have been called — checkpoint rejected
+            agent._setup_environment.assert_not_called()
+
+
+# =========================================================================
+# DEGRADE mode skips phases
+# =========================================================================
+
+class TestDegradeEnforcement:
+    """DEGRADE must skip phases listed in skip_phases."""
+
+    def test_degrade_skips_setup_and_test(self):
+        """When policy says degrade with skip_phases, those phases don't execute."""
+        agent = ArchitectAgent(output_dir="/tmp/test-build-loop-degrade")
+
+        agent.researcher.run = MagicMock(return_value=ResearchReport(
+            feasibility="test", recommended_stack=["python"],
+        ))
+        agent.spec_compiler.run = MagicMock(return_value=BuildContract(
+            project_name="test", summary="test",
+            goals=["test"], acceptance_criteria=["test"],
+            external_dependencies=["Docker container for Redis"],
+        ))
+
+        with patch("build_loop.agents.architect.capture_snapshot") as mock_snap:
+            mock_snap.return_value = EnvironmentSnapshot(
+                os_name="Test", arch="x86_64",
+                python_version="3.12", python_path="/usr/bin/python3",
+                output_dir_writable=True,
+                docker_available=False,
+            )
+
+            agent.planner.run = MagicMock(return_value=BuildPlan(
+                project_name="test", description="test", tech_stack=["python"],
+                modules=[], build_order=[],
+            ))
+            agent.integrator.run = MagicMock(return_value=IntegrationResult(
+                modules_integrated=[], success=True,
+            ))
+
+            # Stub build to avoid "no modules approved" error
+            agent._build_all = MagicMock()
+            agent._write_project = MagicMock()
+            agent._setup_environment = MagicMock()
+            agent._test_and_debug_loop = MagicMock()
+            agent._optimize = MagicMock()
+            agent._acceptance_check = MagicMock()
+
+            agent.run("test idea")
+
+            # Write still happens — it's not a skippable phase
+            agent._write_project.assert_called_once()
+            # Setup, test, and optimize are skipped by degrade policy
+            agent._setup_environment.assert_not_called()
+            agent._test_and_debug_loop.assert_not_called()
+            agent._optimize.assert_not_called()
+            # Acceptance still happens
+            agent._acceptance_check.assert_called_once()

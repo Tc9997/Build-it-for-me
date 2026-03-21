@@ -76,9 +76,15 @@ class ArchitectAgent(Agent):
     name = "architect"
     system_prompt = ""  # Architect doesn't call the LLM directly
 
-    def __init__(self, output_dir: str | None = None):
+    def __init__(self, output_dir: str | None = None, confirm_callback=None):
         self.output_dir = os.path.abspath(output_dir or os.path.join(os.getcwd(), "output"))
         self.state = BuildState(output_dir=self.output_dir)
+
+        # Confirmation callback for CHECKPOINT mode.
+        # Signature: confirm_callback(phase_name: str, reasons: list[str]) -> bool
+        # Returns True to proceed, False to stop.
+        # If None in CHECKPOINT mode, the pipeline stops (fail-closed).
+        self._confirm = confirm_callback
 
         # Sub-agents
         self.researcher = ResearcherAgent()
@@ -157,6 +163,9 @@ class ArchitectAgent(Agent):
             self._print_plan()
             self._save_state()
 
+            # CHECKPOINT gate: plan requires confirmation before build
+            self._checkpoint_gate("plan")
+
             # Phase 6: Build + Review (hard gate)
             self._phase("6", "BUILD", "Building modules with review loop...")
             self._build_all()
@@ -180,20 +189,35 @@ class ArchitectAgent(Agent):
             self._write_project()
             self._save_state()
 
-            # Phase 9: Setup environment
-            self._phase("9", "SETUP", "Installing dependencies...")
-            self._setup_environment()
-            self._save_state()
+            # CHECKPOINT gate: setup/test are side-effect phases
+            self._checkpoint_gate("setup")
 
-            # Phase 10: Execute + Debug loop
-            self._phase("10", "TEST & DEBUG", "Running tests and fixing failures...")
-            self._test_and_debug_loop()
-            self._save_state()
+            # Phase 9: Setup environment (skippable in DEGRADE)
+            if not self._should_skip("setup"):
+                self._phase("9", "SETUP", "Installing dependencies...")
+                self._setup_environment()
+                self._save_state()
+            else:
+                self._phase("9", "SETUP", "[SKIPPED by policy — degraded mode]")
 
-            # Phase 11: Optimize
-            self._phase("11", "OPTIMIZE", "Optimizing working code for performance and robustness...")
-            self._optimize()
-            self._save_state()
+            # Phase 10: Execute + Debug loop (skippable in DEGRADE)
+            if not self._should_skip("test"):
+                self._phase("10", "TEST & DEBUG", "Running tests and fixing failures...")
+                self._test_and_debug_loop()
+                self._save_state()
+            else:
+                self._phase("10", "TEST & DEBUG", "[SKIPPED by policy — degraded mode]")
+
+            # Phase 11: Optimize (skippable in DEGRADE)
+            if not self._should_skip("optimize"):
+                self._phase("11", "OPTIMIZE", "Optimizing working code for performance and robustness...")
+                self._optimize()
+                self._save_state()
+            else:
+                self._phase("11", "OPTIMIZE", "[SKIPPED by policy — degraded mode]")
+
+            # CHECKPOINT gate: acceptance requires confirmation
+            self._checkpoint_gate("acceptance")
 
             # Phase 12: Acceptance
             self._phase("12", "ACCEPTANCE", "Validating against original intent...")
@@ -451,6 +475,58 @@ class ArchitectAgent(Agent):
     # ==================================================================
     # HELPERS
     # ==================================================================
+
+    # ==================================================================
+    # POLICY ENFORCEMENT
+    # ==================================================================
+
+    def _checkpoint_gate(self, phase_name: str) -> None:
+        """Enforce CHECKPOINT mode: stop before side-effect phases unless confirmed.
+
+        In CHECKPOINT mode, if the phase is in require_confirmation:
+          - If a confirm_callback is provided and returns True, proceed.
+          - Otherwise, raise PipelineError (fail-closed).
+        In PROCEED or DEGRADE mode, this is a no-op.
+        """
+        if not self.policy_decision:
+            return
+        if self.policy_decision.autonomy_mode != AutonomyMode.CHECKPOINT:
+            return
+        if phase_name not in self.policy_decision.require_confirmation:
+            return
+
+        console.print(
+            f"\n  [bold yellow]CHECKPOINT:[/bold yellow] Policy requires confirmation "
+            f"before '{phase_name}'"
+        )
+        for r in self.policy_decision.reasons:
+            console.print(f"    - {r}")
+
+        if self._confirm:
+            if self._confirm(phase_name, self.policy_decision.reasons):
+                console.print(f"  [green]Confirmed — proceeding with {phase_name}[/green]")
+                return
+            else:
+                raise PipelineError(
+                    f"Checkpoint rejected at '{phase_name}': user declined to proceed"
+                )
+        else:
+            # No callback — fail closed
+            raise PipelineError(
+                f"Checkpoint at '{phase_name}' with no confirmation callback — "
+                f"cannot proceed in CHECKPOINT mode. "
+                f"Reasons: {self.policy_decision.reasons}"
+            )
+
+    def _should_skip(self, phase_name: str) -> bool:
+        """Check if a phase should be skipped in DEGRADE mode."""
+        if not self.policy_decision:
+            return False
+        if self.policy_decision.autonomy_mode != AutonomyMode.DEGRADE:
+            return False
+        # Check both direct phase names and capability-derived skips
+        skippable = set(self.policy_decision.skip_phases)
+        return phase_name in skippable
 
     def _venv_cmd(self, cmd: str) -> str:
         """Prefix a command to use the project's venv if it exists."""

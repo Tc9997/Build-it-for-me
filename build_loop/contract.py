@@ -6,59 +6,102 @@ consumes the contract, not the original prose.
 
 Schema version is explicit so journals, caches, and templates can detect
 incompatible contracts without silent misinterpretation.
+
+All models use extra="forbid" — unknown fields are rejected, not silently
+dropped. SuccessSignal is a discriminated union: each signal type has its
+own model with only the fields that type requires.
 """
 
 from __future__ import annotations
 
-from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 SCHEMA_VERSION = "1"
 
 
 # ---------------------------------------------------------------------------
-# Success signals — machine-checkable assertions
+# Strict base — all contract models reject unknown fields
 # ---------------------------------------------------------------------------
 
-class SuccessSignalType(str, Enum):
-    """Types of verifiable success signals."""
-    CLI_EXIT = "cli_exit"           # run a command, check exit code
-    HTTP_PROBE = "http_probe"       # hit an endpoint, check status/body
-    FILE_EXISTS = "file_exists"     # a file must exist after run
-    STDOUT_CONTAINS = "stdout_contains"  # command output contains a string
-    IMPORT_CHECK = "import_check"   # a Python module must be importable
-    SCHEMA_VALID = "schema_valid"   # output matches a JSON schema
+class StrictModel(BaseModel):
+    model_config = {"extra": "forbid"}
 
 
-class SuccessSignal(BaseModel):
-    """A single machine-checkable assertion derived from the contract."""
-    type: SuccessSignalType
-    description: str = Field(description="Human-readable description of what this checks")
-    # CLI_EXIT / STDOUT_CONTAINS
-    command: str = ""
+# ---------------------------------------------------------------------------
+# Success signals — discriminated union of per-type models
+# ---------------------------------------------------------------------------
+
+class CliExitSignal(StrictModel):
+    """Run a command and check exit code."""
+    type: Literal["cli_exit"] = "cli_exit"
+    description: str
+    command: str
     args: list[str] = Field(default_factory=list)
     expect_exit: int = 0
-    expect_contains: str = ""
-    # HTTP_PROBE
-    path: str = ""
+
+
+class StdoutContainsSignal(StrictModel):
+    """Run a command and check stdout contains a string."""
+    type: Literal["stdout_contains"] = "stdout_contains"
+    description: str
+    command: str
+    args: list[str] = Field(default_factory=list)
+    expect_contains: str
+
+
+class HttpProbeSignal(StrictModel):
+    """Hit an HTTP endpoint and check status/body."""
+    type: Literal["http_probe"] = "http_probe"
+    description: str
+    path: str
     method: str = "GET"
     expect_status: int = 200
     expect_body_contains: str = ""
-    # FILE_EXISTS
-    file_path: str = ""
-    # IMPORT_CHECK
-    module_name: str = ""
-    # SCHEMA_VALID
-    json_schema: dict = Field(default_factory=dict)
+
+
+class FileExistsSignal(StrictModel):
+    """A file must exist after run."""
+    type: Literal["file_exists"] = "file_exists"
+    description: str
+    file_path: str
+
+
+class ImportCheckSignal(StrictModel):
+    """A Python module must be importable."""
+    type: Literal["import_check"] = "import_check"
+    description: str
+    module_name: str
+
+
+class SchemaValidSignal(StrictModel):
+    """Output must match a JSON schema."""
+    type: Literal["schema_valid"] = "schema_valid"
+    description: str
+    command: str = Field(description="Command whose stdout is validated")
+    args: list[str] = Field(default_factory=list)
+    json_schema: dict
+
+
+SuccessSignal = Annotated[
+    Union[
+        CliExitSignal,
+        StdoutContainsSignal,
+        HttpProbeSignal,
+        FileExistsSignal,
+        ImportCheckSignal,
+        SchemaValidSignal,
+    ],
+    Field(discriminator="type"),
+]
 
 
 # ---------------------------------------------------------------------------
 # Behavioral expectations — richer than liveness
 # ---------------------------------------------------------------------------
 
-class BehavioralExpectation(BaseModel):
+class BehavioralExpectation(StrictModel):
     """A concrete expected behavior: given input X, expect output matching Y."""
     description: str
     given: str = Field(description="Input or precondition")
@@ -73,7 +116,7 @@ class BehavioralExpectation(BaseModel):
 # Invariant — things that must NEVER happen
 # ---------------------------------------------------------------------------
 
-class Invariant(BaseModel):
+class Invariant(StrictModel):
     """A property that must hold at all times."""
     description: str
     category: str = Field(
@@ -86,14 +129,17 @@ class Invariant(BaseModel):
 # The contract itself
 # ---------------------------------------------------------------------------
 
-class BuildContract(BaseModel):
+class BuildContract(StrictModel):
     """The structured specification for a build.
 
     Produced by the SpecCompiler from (idea + research). Consumed by planner,
     verifier, and acceptance. This is the single source of truth for what
     the project must do.
+
+    extra="forbid" — unknown fields are rejected.
+    schema_version is Literal["1"] — mismatches fail validation.
     """
-    schema_version: str = SCHEMA_VERSION
+    schema_version: Literal["1"] = SCHEMA_VERSION
 
     # Identity
     project_name: str

@@ -68,6 +68,9 @@ class TestPolicyEngine:
         )
         assert decision.autonomy_mode == AutonomyMode.DEGRADE
         assert "docker" in decision.blocked_capabilities
+        # Must emit real phase names for architect to skip
+        assert "setup" in decision.skip_phases
+        assert "test" in decision.skip_phases
 
     def test_network_needed_but_missing_degrades(self):
         decision = evaluate_policy(

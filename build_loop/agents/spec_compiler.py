@@ -1,8 +1,11 @@
 """SpecCompiler agent: turns (idea + research) into a structured BuildContract.
 
-This is the only LLM call in steps 1-3. It converts prose into the contract
-that everything downstream consumes. The contract must be specific enough
-for the planner, verifier, and acceptance tester to work from.
+LLM-powered. Converts prose into the contract that everything downstream
+consumes. The contract must be specific enough for the planner, verifier,
+and acceptance tester to work from.
+
+EnvironmentSnapshot and Policy are deterministic (no LLM). Research and
+SpecCompiler are LLM-backed. This is the boundary.
 """
 
 from __future__ import annotations
