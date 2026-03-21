@@ -225,3 +225,15 @@ class BuildContract(StrictModel):
 
     # Open questions — things the system couldn't resolve
     open_questions: list[str] = Field(default_factory=list)
+
+    def canonical_hash(self) -> str:
+        """SHA-256 of the contract in canonical JSON form.
+
+        Keys are sorted, whitespace is normalized. This hash is stable
+        across serialization order and can be used to tie a BuildPlan
+        to a specific contract version.
+        """
+        import hashlib
+        import json
+        canonical = json.dumps(self.model_dump(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode()).hexdigest()

@@ -2,11 +2,16 @@
 
 Every agent reads and writes these structures. This is the contract layer —
 if you change a schema, every agent that touches it must be updated.
+
+All persisted schemas carry an explicit schema_version (Literal where
+possible) so journals, caches, and template evolution can detect
+incompatible data without silent misinterpretation.
 """
 
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -110,9 +115,32 @@ class ModuleSpec(BaseModel):
 
 
 class BuildPlan(BaseModel):
-    """The full build plan produced by the Planner."""
+    """The full build plan produced by the Planner.
+
+    Contract coverage fields tie the plan to the contract:
+      - contract_hash: SHA-256 of the canonical contract JSON
+      - goals_covered: maps each contract goal to module IDs that address it
+      - non_goals_acknowledged: planner confirms these are out of scope
+    """
+    schema_version: str = "1"
     project_name: str
     description: str
+
+    # Contract traceability
+    contract_hash: str = Field(
+        default="",
+        description="SHA-256 of the canonical contract JSON — ties plan to a specific contract"
+    )
+    goals_covered: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Maps each contract goal string to the module IDs that address it"
+    )
+    non_goals_acknowledged: list[str] = Field(
+        default_factory=list,
+        description="Contract non-goals the planner confirms it will NOT build"
+    )
+
+    # Technical plan
     tech_stack: list[str] = Field(default_factory=list)
     directory_structure: str = Field(default="", description="Planned directory tree as text")
     interfaces: list[InterfaceContract] = Field(default_factory=list)
@@ -204,25 +232,64 @@ class AcceptanceResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Typed state wrappers for phase outputs
+# These import from their respective modules (no circular deps)
+# ---------------------------------------------------------------------------
+
+from build_loop.contract import BuildContract
+from build_loop.environment import EnvironmentSnapshot
+from build_loop.policy import PolicyDecision
+
+
+class ContractState(BaseModel):
+    """Typed wrapper for BuildContract in state."""
+    data: BuildContract
+
+
+class EnvironmentState(BaseModel):
+    """Typed wrapper for EnvironmentSnapshot in state."""
+    data: EnvironmentSnapshot
+
+
+class PolicyState(BaseModel):
+    """Typed wrapper for PolicyDecision in state."""
+    data: PolicyDecision
+
+
+# ---------------------------------------------------------------------------
 # Top-level build state
 # ---------------------------------------------------------------------------
 
 class BuildState(BaseModel):
-    """The full state of a build loop run. Persisted to disk."""
-    schema_version: str = "1"
+    """The full state of a build loop run. Persisted to disk.
+
+    schema_version is Literal["1"] so loading stale state fails
+    validation instead of silently misinterpreting fields.
+
+    contract, environment, and policy are typed models (not raw dicts).
+    verification remains dict to avoid circular import with verifier.py.
+    """
+    schema_version: Literal["1"] = "1"
     idea: str = ""
-    # Steps 1-3: contract, environment, policy
-    contract: dict | None = Field(default=None, description="Serialized BuildContract")
-    environment: dict | None = Field(default=None, description="Serialized EnvironmentSnapshot")
-    policy: dict | None = Field(default=None, description="Serialized PolicyDecision")
+
+    # Typed phase outputs (no circular import risk)
+    contract: ContractState | None = None
+    environment: EnvironmentState | None = None
+    policy: PolicyState | None = None
     research: ResearchReport | None = None
     plan: BuildPlan | None = None
+
+    # Build artifacts
     artifacts: dict[str, BuildArtifact] = Field(default_factory=dict)
     reviews: dict[str, list[ReviewResult]] = Field(default_factory=dict)
     integration: IntegrationResult | None = None
     exec_history: list[ExecResult] = Field(default_factory=list)
     debug_rounds: int = 0
     optimization_count: int = 0
+
+    # Verification stays as dict to avoid circular import with verifier.py
+    # (verifier imports ExecResult from schemas)
     verification: dict | None = Field(default=None, description="Serialized VerificationResult")
+
     acceptance: AcceptanceResult | None = None
     output_dir: str = ""

@@ -35,14 +35,18 @@ from build_loop.verifier import Verifier, VerificationResult
 from build_loop.contract import BuildContract
 from build_loop.environment import EnvironmentSnapshot, capture_snapshot
 from build_loop.policy import AutonomyMode, PolicyDecision, evaluate_policy
+from build_loop.plan_validation import validate_plan_coverage
 from build_loop.safety import PathTraversalError, safe_output_path
 from build_loop.schemas import (
     AcceptanceVerdict,
     BuildArtifact,
     BuildPlan,
     BuildState,
+    ContractState,
     DebugFix,
+    EnvironmentState,
     ModuleSpec,
+    PolicyState,
     ReviewResult,
     ReviewVerdict,
     TaskStatus,
@@ -126,7 +130,7 @@ class ArchitectAgent(Agent):
             self._phase("2", "CONTRACT", "Compiling build contract from idea + research...")
             research_json = json.dumps(self.state.research.model_dump(), indent=2)
             self.contract = self.spec_compiler.run(idea, research_json)
-            self.state.contract = self.contract.model_dump()
+            self.state.contract = ContractState(data=self.contract)
             self._print_contract()
             self._save_state()
 
@@ -143,14 +147,14 @@ class ArchitectAgent(Agent):
                 required_secrets=self.contract.secrets_required,
                 required_tools=required_tools,
             )
-            self.state.environment = self.env_snapshot.model_dump()
+            self.state.environment = EnvironmentState(data=self.env_snapshot)
             self._print_environment()
             self._save_state()
 
             # Phase 4: Policy — can we build this here?
             self._phase("4", "POLICY", "Evaluating build feasibility...")
             self.policy_decision = evaluate_policy(self.contract, self.env_snapshot)
-            self.state.policy = self.policy_decision.model_dump()
+            self.state.policy = PolicyState(data=self.policy_decision)
             self._print_policy()
             self._save_state()
 
@@ -162,14 +166,31 @@ class ArchitectAgent(Agent):
 
             # Phase 5: Plan — contract-driven, not prose-driven
             self._phase("5", "PLAN", "Decomposing into modules and interfaces...")
+            contract_hash = self.contract.canonical_hash()
             plan_context = (
-                f"BUILD CONTRACT:\n{json.dumps(self.state.contract, indent=2)}\n\n"
+                f"BUILD CONTRACT (contract_hash={contract_hash}):\n"
+                f"{json.dumps(self.contract.model_dump(), indent=2)}\n\n"
                 f"RESEARCH FINDINGS:\n{research_json}"
             )
             self.state.plan = self.planner.run(plan_context)
-            # Carry run_mode from contract to plan
+            # Carry run_mode and contract_hash from contract to plan
             if self.contract:
                 self.state.plan.run_mode = self.contract.run_mode
+                if not self.state.plan.contract_hash:
+                    self.state.plan.contract_hash = contract_hash
+
+            # Validate plan covers the contract
+            validation = validate_plan_coverage(self.state.plan, self.contract)
+            if not validation.valid:
+                for err in validation.errors:
+                    console.print(f"  [bold red]Plan error: {err}[/bold red]")
+                console.print(
+                    f"  [yellow]Plan has {len(validation.errors)} coverage error(s). "
+                    f"Proceeding with warnings — builder may produce incomplete output.[/yellow]"
+                )
+            for warn in validation.warnings:
+                console.print(f"  [dim]Plan warning: {warn}[/dim]")
+
             self._print_plan()
             self._save_state()
 
