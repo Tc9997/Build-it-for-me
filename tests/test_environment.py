@@ -55,3 +55,24 @@ class TestEnvironmentSnapshot:
     def test_network_check_returns_bool(self):
         snap = capture_snapshot()
         assert isinstance(snap.network_available, bool)
+
+    def test_required_tools_are_probed(self):
+        """Tools from the contract's capability_requirements are discovered."""
+        # python3 should be available on any machine running these tests
+        snap = capture_snapshot(required_tools=["python3"])
+        tool = next((t for t in snap.tools if t.name == "python3"), None)
+        assert tool is not None
+        assert tool.available
+
+    def test_required_tool_not_installed(self):
+        """A tool that doesn't exist is reported as unavailable."""
+        snap = capture_snapshot(required_tools=["definitely_not_installed_xyz"])
+        tool = next((t for t in snap.tools if t.name == "definitely_not_installed_xyz"), None)
+        assert tool is not None
+        assert not tool.available
+
+    def test_required_tools_deduplicated_with_builtins(self):
+        """Requesting 'git' (a built-in) doesn't produce duplicates."""
+        snap = capture_snapshot(required_tools=["git"])
+        git_tools = [t for t in snap.tools if t.name == "git"]
+        assert len(git_tools) == 1

@@ -139,7 +139,16 @@ class Verifier:
         service_proc = None
 
         if contract.run_mode == "service" and has_http_probes and run_command:
-            service_proc = self._start_service(run_command)
+            # Use the first http_probe URL as the readiness endpoint
+            first_probe = next(
+                (s for s in contract.success_signals if isinstance(s, HttpProbeSignal)), None
+            )
+            probe_url = None
+            if first_probe:
+                probe_url = first_probe.path
+                if not probe_url.startswith("http"):
+                    probe_url = f"http://localhost:8000{probe_url}"
+            service_proc = self._start_service(run_command, probe_url=probe_url)
             if service_proc is None:
                 result.tier2_results.append(SignalResult(
                     signal_type="service_start", description="Start service for http_probe",
@@ -359,11 +368,21 @@ class Verifier:
     # Service lifecycle (for http_probe on service-mode projects)
     # ------------------------------------------------------------------
 
-    def _start_service(self, run_command: str, startup_wait: float = 3.0) -> subprocess.Popen | None:
-        """Start a service process for http_probe verification.
+    def _start_service(
+        self,
+        run_command: str,
+        probe_url: str | None = None,
+        timeout: float = 15.0,
+        poll_interval: float = 0.3,
+    ) -> subprocess.Popen | None:
+        """Start a service process and wait until it's ready.
 
-        Returns the Popen handle, or None if the service failed to start.
-        Waits startup_wait seconds, then checks the process is still alive.
+        Readiness is determined by:
+          1. If probe_url is given: poll it until it returns any HTTP response.
+          2. Otherwise: wait poll_interval, check process is still alive.
+
+        Returns the Popen handle, or None if the service failed to start
+        or never became ready within timeout.
         """
         try:
             argv = safe_command(run_command)
@@ -384,14 +403,49 @@ class Verifier:
             self.log(f"  [red]Service command not found: {argv[0]}[/red]")
             return None
 
-        time.sleep(startup_wait)
+        if probe_url:
+            # Readiness-based: poll the endpoint until it responds
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    stderr = proc.stderr.read() if proc.stderr else ""
+                    self.log(
+                        f"  [red]Service exited during startup (exit {proc.returncode})[/red]"
+                        + (f"\n    stderr: {stderr[-500:]}" if stderr else "")
+                    )
+                    return None
+                try:
+                    r = subprocess.run(
+                        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                         "--max-time", "2", probe_url],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if r.stdout.strip().isdigit() and int(r.stdout.strip()) > 0:
+                        self.log(f"  [green]Service ready (responded at {probe_url})[/green]")
+                        return proc
+                except Exception:
+                    pass
+                time.sleep(poll_interval)
 
-        if proc.poll() is not None:
-            self.log(f"  [red]Service exited during startup (exit {proc.returncode})[/red]")
-            return None
-
-        self.log(f"  [green]Service alive after {startup_wait}s[/green]")
-        return proc
+            # Timeout — check if process is at least alive
+            if proc.poll() is None:
+                self.log(f"  [yellow]Service alive but never responded at {probe_url} within {timeout}s[/yellow]")
+                return proc  # Let probes try anyway
+            else:
+                self.log(f"  [red]Service exited and never became ready[/red]")
+                return None
+        else:
+            # No probe URL — basic liveness check after a short wait
+            time.sleep(min(1.0, timeout))
+            if proc.poll() is not None:
+                stderr = proc.stderr.read() if proc.stderr else ""
+                self.log(
+                    f"  [red]Service exited during startup (exit {proc.returncode})[/red]"
+                    + (f"\n    stderr: {stderr[-500:]}" if stderr else "")
+                )
+                return None
+            self.log(f"  [green]Service alive[/green]")
+            return proc
 
     def _stop_service(self, proc: subprocess.Popen) -> None:
         """Gracefully terminate a service process."""

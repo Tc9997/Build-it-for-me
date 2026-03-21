@@ -132,9 +132,16 @@ class ArchitectAgent(Agent):
 
             # Phase 3: Environment snapshot — what's available on this machine
             self._phase("3", "ENVIRONMENT", "Capturing host capabilities...")
+            # Extract SYSTEM_TOOL names so snapshot probes them
+            from build_loop.contract import CapabilityType
+            required_tools = [
+                cap.name for cap in self.contract.capability_requirements
+                if cap.type == CapabilityType.SYSTEM_TOOL
+            ]
             self.env_snapshot = capture_snapshot(
                 output_dir=self.output_dir,
                 required_secrets=self.contract.secrets_required,
+                required_tools=required_tools,
             )
             self.state.environment = self.env_snapshot.model_dump()
             self._print_environment()

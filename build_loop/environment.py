@@ -74,16 +74,26 @@ class EnvironmentSnapshot(BaseModel):
     output_dir_writable: bool = True
 
 
+_BUILTIN_TOOLS = ["git", "curl", "gh", "docker", "node", "npm", "cargo", "go"]
+
+
 def capture_snapshot(
     output_dir: str = ".",
     required_secrets: list[str] | None = None,
+    required_tools: list[str] | None = None,
 ) -> EnvironmentSnapshot:
     """Capture the current environment.
 
     Bounded side effects: runs --version subprocesses, DNS lookup,
     and a write/delete probe on the output directory.
+
+    Args:
+        required_tools: Additional tool names to probe (from contract
+            SYSTEM_TOOL capability requirements). These are checked
+            alongside the built-in tool list so policy can match by name.
     """
     required_secrets = required_secrets or []
+    required_tools = required_tools or []
 
     snap = EnvironmentSnapshot(
         os_name=platform.system(),
@@ -93,8 +103,9 @@ def capture_snapshot(
         python_path=sys.executable,
     )
 
-    # Check common tools
-    for tool_name in ["git", "curl", "gh", "docker", "node", "npm", "cargo", "go"]:
+    # Check built-in tools + any demanded by the contract
+    all_tools = list(dict.fromkeys(_BUILTIN_TOOLS + [t.lower() for t in required_tools]))
+    for tool_name in all_tools:
         tool = _check_tool(tool_name)
         snap.tools.append(tool)
         if tool_name == "docker":
