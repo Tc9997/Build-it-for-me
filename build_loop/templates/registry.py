@@ -37,7 +37,10 @@ def _load_pinned_hashes() -> dict[str, str]:
     path = _pinned_hashes_path()
     if not path.exists():
         raise RegistryError(f"Pinned hashes file missing: {path}")
-    return json.loads(path.read_text())
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, ValueError) as e:
+        raise RegistryError(f"Malformed pinned_hashes.json: {e}")
 
 
 def _compute_content_hash(directory: Path) -> str:

@@ -59,6 +59,23 @@ class TestTemplatePinning:
         )
         assert not verify_commit(fake_entry)
 
+    def test_malformed_pinned_hashes_raises_registry_error(self):
+        """Malformed pinned_hashes.json must raise RegistryError, not JSONDecodeError."""
+        from build_loop.templates.registry import _load_pinned_hashes, _pinned_hashes_path
+        import build_loop.templates.registry as reg
+
+        path = _pinned_hashes_path()
+        original = path.read_text()
+        try:
+            path.write_text("{not valid json")
+            # Reset lazy registry so it re-reads
+            reg._REGISTRY = None
+            with pytest.raises(RegistryError, match="Malformed"):
+                reg._get_registry()
+        finally:
+            path.write_text(original)
+            reg._REGISTRY = None  # Force clean re-init
+
     def test_pinned_hashes_file_exists(self):
         """The checked-in hashes file must exist."""
         from build_loop.templates.registry import _pinned_hashes_path
@@ -89,6 +106,24 @@ class TestOwnershipFailsClosed:
         (template / "unlisted.py").write_text("pass")  # Not in ownership.json
 
         with pytest.raises(MaterializationError, match="no ownership entry"):
+            materialize(
+                cached_template=template,
+                output_dir=tmp_path / "out",
+                project_name="test",
+                summary="test",
+                template_id="test",
+                pinned_commit="abc",
+                contract_hash="def",
+            )
+
+    def test_malformed_ownership_json_fails(self, tmp_path):
+        """Malformed JSON in ownership.json must raise MaterializationError, not JSONDecodeError."""
+        template = tmp_path / "template"
+        template.mkdir()
+        (template / "ownership.json").write_text("{this is not valid json")
+        (template / "file.py").write_text("pass")
+
+        with pytest.raises(MaterializationError, match="Malformed"):
             materialize(
                 cached_template=template,
                 output_dir=tmp_path / "out",

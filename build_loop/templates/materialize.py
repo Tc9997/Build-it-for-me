@@ -48,7 +48,12 @@ def materialize(
             f"Template missing ownership.json: {cached_template}"
         )
 
-    raw_ownership = json.loads(ownership_path.read_text())
+    try:
+        raw_ownership = json.loads(ownership_path.read_text())
+    except (json.JSONDecodeError, ValueError) as e:
+        raise MaterializationError(
+            f"Malformed ownership.json in {cached_template}: {e}"
+        )
 
     # Build substitution map
     subs = {
