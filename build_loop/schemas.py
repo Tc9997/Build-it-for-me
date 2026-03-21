@@ -208,5 +208,6 @@ class BuildState(BaseModel):
     integration: IntegrationResult | None = None
     exec_history: list[ExecResult] = Field(default_factory=list)
     debug_rounds: int = 0
+    optimization_count: int = 0
     acceptance: AcceptanceResult | None = None
     output_dir: str = ""

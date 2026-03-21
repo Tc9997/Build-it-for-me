@@ -1,9 +1,10 @@
 """Architect agent: the orchestrator.
 
 Takes an idea and autonomously delivers a working project through:
-  RESEARCH → PLAN → BUILD → REVIEW → INTEGRATE → EXECUTE → DEBUG → ACCEPT
+  RESEARCH → PLAN → BUILD → REVIEW → INTEGRATE → EXECUTE → DEBUG → OPTIMIZE → ACCEPT
 
 No human in the loop. The debug cycle repeats until tests pass or max attempts hit.
+Once passing, the optimizer improves performance/robustness, then tests are re-verified.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from build_loop.agents.reviewer import ReviewerAgent
 from build_loop.agents.integrator import IntegratorAgent
 from build_loop.agents.executor import ExecutorAgent
 from build_loop.agents.debugger import DebuggerAgent
+from build_loop.agents.optimizer import OptimizerAgent
 from build_loop.agents.acceptance import AcceptanceAgent
 from build_loop.schemas import (
     AcceptanceVerdict,
@@ -59,6 +61,7 @@ class ArchitectAgent(Agent):
         self.integrator = IntegratorAgent()
         self.executor = ExecutorAgent(self.output_dir)
         self.debugger = DebuggerAgent()
+        self.optimizer = OptimizerAgent()
         self.acceptance = AcceptanceAgent()
 
     # ==================================================================
@@ -113,8 +116,13 @@ class ArchitectAgent(Agent):
         self._test_and_debug_loop()
         self._save_state()
 
-        # Phase 8: Acceptance
-        self._phase("8", "ACCEPTANCE", "Validating against original intent...")
+        # Phase 8: Optimize
+        self._phase("8", "OPTIMIZE", "Optimizing working code for performance and robustness...")
+        self._optimize()
+        self._save_state()
+
+        # Phase 9: Acceptance
+        self._phase("9", "ACCEPTANCE", "Validating against original intent...")
         self._acceptance_check()
         self._save_state()
 
@@ -254,6 +262,69 @@ class ArchitectAgent(Agent):
 
         console.print(f"  [yellow]Exhausted {MAX_DEBUG_ROUNDS} debug rounds[/yellow]")
 
+    def _optimize(self) -> None:
+        """Run the optimizer on working code, then re-verify tests still pass."""
+        plan = self.state.plan
+        project_files = self._read_project_files()
+
+        # Get most recent passing test result for context
+        test_results = [r for r in self.state.exec_history if r.success and ("test" in r.command.lower() or "pytest" in r.command.lower())]
+        test_result = test_results[-1] if test_results else None
+
+        result = self.optimizer.run(
+            plan=plan,
+            project_files=project_files,
+            test_result=test_result,
+        )
+
+        file_changes = result.get("file_changes", {})
+        if not file_changes:
+            console.print("  [dim]No optimizations needed[/dim]")
+            return
+
+        # Apply optimizations
+        self.state.optimization_count = len(result.get("optimizations", []))
+        out = Path(self.output_dir)
+        for path, content in file_changes.items():
+            self._write_file(out / path, content)
+            self.log(f"  optimized {path}")
+
+        # Install any new deps
+        for dep in result.get("new_dependencies", []):
+            r = self.executor.run_command(self._venv_cmd(f"pip install {dep}"))
+            self.state.exec_history.append(r)
+
+        # Re-run tests to make sure optimizations didn't break anything
+        console.print("\n  [bold]Re-running tests after optimization...[/bold]")
+        test_cmd = self._venv_cmd(plan.test_command) if plan else "pytest -v"
+        verify = self.executor.run_tests(test_cmd)
+        self.state.exec_history.append(verify)
+
+        if verify.success:
+            console.print("  [bold green]Tests still pass after optimization[/bold green]")
+        else:
+            # Optimization broke something — roll back by re-running debug loop
+            console.print("  [yellow]Optimization broke tests — entering debug loop to fix...[/yellow]")
+            previous_fixes: list[DebugFix] = []
+            for attempt in range(3):
+                current_files = self._read_project_files()
+                fix = self.debugger.run(
+                    error=verify,
+                    plan=plan,
+                    project_files=current_files,
+                    previous_fixes=previous_fixes if previous_fixes else None,
+                )
+                previous_fixes.append(fix)
+                self._apply_fix(fix)
+
+                verify = self.executor.run_tests(test_cmd)
+                self.state.exec_history.append(verify)
+                if verify.success:
+                    console.print("  [bold green]Fixed — tests pass again[/bold green]")
+                    return
+
+            console.print("  [yellow]Could not fix optimization breakage — results may be degraded[/yellow]")
+
     def _acceptance_check(self) -> None:
         """Run acceptance testing against the original idea."""
         plan = self.state.plan
@@ -374,6 +445,7 @@ class ArchitectAgent(Agent):
         report.add_row("Idea", self.state.idea[:100])
         report.add_row("Modules built", str(len(self.state.artifacts)))
         report.add_row("Debug rounds", str(self.state.debug_rounds))
+        report.add_row("Optimizations", str(self.state.optimization_count))
         report.add_row("Acceptance", f"[{color}]{status}[/{color}]")
         report.add_row("Output", self.output_dir)
 
