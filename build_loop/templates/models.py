@@ -82,13 +82,15 @@ class OwnershipManifest(BaseModel):
     )
 
     # Path → owner mapping
+    # Every template file must be listed. Unlisted paths are new files
+    # created by the builder during build — those are GENERATED.
     files: dict[str, FileOwner] = Field(
         default_factory=dict,
-        description="relative_path -> FileOwner. Paths not listed are implicitly GENERATED."
+        description="relative_path -> FileOwner. Only builder-created files may be unlisted."
     )
 
     def owner_of(self, path: str) -> FileOwner:
-        """Get the owner of a path. Unlisted paths are GENERATED."""
+        """Get the owner of a path. Unlisted paths (builder-created) are GENERATED."""
         return self.files.get(path, FileOwner.GENERATED)
 
     def can_write(self, path: str) -> bool:

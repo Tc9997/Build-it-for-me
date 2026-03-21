@@ -26,7 +26,7 @@ from build_loop.agents.debugger import DebuggerAgent
 from build_loop.agents.executor import ExecutorAgent
 from build_loop.agents.integrator import IntegratorAgent
 from build_loop.agents.optimizer import OptimizerAgent
-from build_loop.agents.planner import PlannerAgent
+from build_loop.agents.planner import FreeformPlannerAgent
 from build_loop.agents.researcher import ResearcherAgent
 from build_loop.agents.reviewer import ReviewerAgent
 from build_loop.common.pipeline import (
@@ -65,7 +65,7 @@ class FreeformOrchestrator:
 
         # Sub-agents
         self.researcher = ResearcherAgent()
-        self.planner = PlannerAgent()
+        self.planner = FreeformPlannerAgent()
         self.builder = BuilderAgent()
         self.reviewer = ReviewerAgent()
         self.integrator = IntegratorAgent()

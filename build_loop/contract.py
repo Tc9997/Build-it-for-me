@@ -174,8 +174,9 @@ class BuildContract(StrictModel):
     # Identity
     project_name: str
     summary: str = Field(description="One-paragraph description of what the project does")
-    archetype: Literal["python_cli", "fastapi_service"] = Field(
-        description="Project archetype — determines which template is used"
+    archetype: Literal["python_cli", "fastapi_service", "unsupported"] = Field(
+        description="Project archetype. 'unsupported' if the idea does not fit "
+        "python_cli or fastapi_service — template_first will reject this."
     )
 
     # Scope

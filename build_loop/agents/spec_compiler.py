@@ -26,7 +26,7 @@ You MUST respond with a single JSON object matching this schema:
   "schema_version": "1",
   "project_name": "string (snake_case)",
   "summary": "string — one paragraph describing what the project does",
-  "archetype": "python_cli | fastapi_service — MUST be one of these two. python_cli for CLI tools, scripts, data pipelines. fastapi_service for REST APIs, web services, bots with HTTP interfaces.",
+  "archetype": "python_cli | fastapi_service | unsupported — python_cli for CLI tools, scripts, data pipelines. fastapi_service for REST APIs, web services, bots with HTTP interfaces. Use 'unsupported' if the project does NOT fit either archetype (e.g. mobile apps, browser extensions, hardware projects, game engines).",
   "goals": ["concrete things the project MUST do — be specific and testable"],
   "non_goals": ["things explicitly OUT of scope — the planner should NOT build these"],
   "constraints": ["hard requirements: language, framework, licensing, performance bounds"],

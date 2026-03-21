@@ -120,6 +120,13 @@ class TemplateFirstOrchestrator:
             self.state.contract = ContractState(data=self.contract)
             save_state(self.state, self.output_dir)
 
+            # Gate: reject unsupported archetypes
+            if self.contract.archetype == "unsupported":
+                raise PipelineError(
+                    "This project does not fit a supported archetype "
+                    "(python_cli or fastapi_service). Use --mode freeform instead."
+                )
+
             # Phase 3: Environment
             phase("3", "ENVIRONMENT", "Capturing host capabilities...")
             required_tools = [

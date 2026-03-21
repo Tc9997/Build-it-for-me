@@ -67,12 +67,20 @@ def materialize(
         if rel == "ownership.json":
             continue
 
-        # Determine ownership
-        owner_str = raw_ownership.get(rel, "generated")
+        # Determine ownership — fail closed on missing or malformed entries
+        owner_str = raw_ownership.get(rel)
+        if owner_str is None:
+            raise MaterializationError(
+                f"Template file '{rel}' has no ownership entry in ownership.json. "
+                f"Every template file must be explicitly declared."
+            )
         try:
             owner = FileOwner(owner_str)
         except ValueError:
-            owner = FileOwner.GENERATED
+            raise MaterializationError(
+                f"Template file '{rel}' has invalid ownership value: {owner_str!r}. "
+                f"Must be one of: {[o.value for o in FileOwner]}"
+            )
 
         files_map[rel] = owner
 
