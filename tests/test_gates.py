@@ -351,8 +351,11 @@ class TestCheckpointEnforcement:
             agent._setup_environment.assert_called_once()
 
     def test_checkpoint_rejected_stops_pipeline(self):
-        """Confirm callback returns False → pipeline stops."""
+        """Confirm callback returns False → pipeline stops at checkpoint, not earlier."""
+        confirm_calls = []
+
         def confirm_no(phase, reasons):
+            confirm_calls.append(phase)
             return False
 
         agent = ArchitectAgent(
@@ -379,7 +382,9 @@ class TestCheckpointEnforcement:
 
             agent.planner.run = MagicMock(return_value=BuildPlan(
                 project_name="test", description="test", tech_stack=["python"],
-                modules=[], build_order=[],
+                modules=[ModuleSpec(id="stub", name="stub", description="stub", size=TaskSize.SMALL)],
+                build_order=[["stub"]],
+                goals_covered={"test": ["stub"]},
             ))
 
             agent.integrator.run = MagicMock(return_value=IntegrationResult(
@@ -392,6 +397,8 @@ class TestCheckpointEnforcement:
 
             agent.run("test idea")
 
+            # Confirm callback was actually called (not short-circuited by plan gate)
+            assert len(confirm_calls) > 0
             # Setup should not have been called — checkpoint rejected
             agent._setup_environment.assert_not_called()
 
