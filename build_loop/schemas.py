@@ -132,6 +132,10 @@ class BuildPlan(BaseModel):
         default="python main.py",
         description="Command to run the project"
     )
+    run_mode: str = Field(
+        default="batch",
+        description="'batch' for one-shot CLI jobs, 'service' for long-running servers/bots/watchers"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1,10 +1,11 @@
 """Architect agent: the orchestrator.
 
 Takes an idea and autonomously delivers a working project through:
-  RESEARCH → PLAN → BUILD → REVIEW → INTEGRATE → EXECUTE → DEBUG → OPTIMIZE → ACCEPT
+  RESEARCH → PLAN → BUILD → REVIEW → INTEGRATE → WRITE → SETUP → TEST+DEBUG → OPTIMIZE → ACCEPT
 
-No human in the loop. The debug cycle repeats until tests pass or max attempts hit.
-Once passing, the optimizer improves performance/robustness, then tests are re-verified.
+Every phase gate is a hard control-flow decision. Model output is validated
+before any side effect. Review rejection blocks integration. Integration
+failure stops the pipeline.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from build_loop.agents.executor import ExecutorAgent
 from build_loop.agents.debugger import DebuggerAgent
 from build_loop.agents.optimizer import OptimizerAgent
 from build_loop.agents.acceptance import AcceptanceAgent
+from build_loop.safety import PathTraversalError, safe_output_path
 from build_loop.schemas import (
     AcceptanceVerdict,
     BuildArtifact,
@@ -35,6 +37,7 @@ from build_loop.schemas import (
     BuildState,
     DebugFix,
     ModuleSpec,
+    ReviewResult,
     ReviewVerdict,
     TaskStatus,
 )
@@ -45,9 +48,29 @@ MAX_REVIEW_REVISIONS = 3
 MAX_DEBUG_ROUNDS = 5
 
 
+class ModuleRejectedError(Exception):
+    """Raised when a module exhausts review revisions without approval."""
+
+    def __init__(self, module_id: str, final_review: ReviewResult):
+        self.module_id = module_id
+        self.final_review = final_review
+        super().__init__(
+            f"Module '{module_id}' rejected after {MAX_REVIEW_REVISIONS} revisions: "
+            f"{final_review.issues}"
+        )
+
+
+class IntegrationFailedError(Exception):
+    """Raised when integration reports blocking issues."""
+
+
+class PipelineError(Exception):
+    """Raised for any phase-gate failure that should stop the pipeline."""
+
+
 class ArchitectAgent(Agent):
     name = "architect"
-    system_prompt = ""  # Architect doesn't call the LLM directly anymore
+    system_prompt = ""  # Architect doesn't call the LLM directly
 
     def __init__(self, output_dir: str | None = None):
         self.output_dir = os.path.abspath(output_dir or os.path.join(os.getcwd(), "output"))
@@ -73,58 +96,69 @@ class ArchitectAgent(Agent):
 
         console.print(Panel(idea, title="[bold]PROJECT IDEA[/bold]"))
 
-        # Phase 1: Research
-        self._phase("1", "RESEARCH", "Investigating feasibility and approach...")
-        self.state.research = self.researcher.run(idea)
-        self._print_research()
-        self._save_state()
+        try:
+            # Phase 1: Research
+            self._phase("1", "RESEARCH", "Investigating feasibility and approach...")
+            self.state.research = self.researcher.run(idea)
+            self._print_research()
+            self._save_state()
 
-        # Phase 2: Plan
-        self._phase("2", "PLAN", "Decomposing into modules and interfaces...")
-        research_context = (
-            f"{idea}\n\nRESEARCH FINDINGS:\n"
-            f"{json.dumps(self.state.research.model_dump(), indent=2)}"
-        )
-        self.state.plan = self.planner.run(research_context)
-        self._print_plan()
-        self._save_state()
+            # Phase 2: Plan
+            self._phase("2", "PLAN", "Decomposing into modules and interfaces...")
+            research_context = (
+                f"{idea}\n\nRESEARCH FINDINGS:\n"
+                f"{json.dumps(self.state.research.model_dump(), indent=2)}"
+            )
+            self.state.plan = self.planner.run(research_context)
+            self._print_plan()
+            self._save_state()
 
-        # Phase 3: Build + Review
-        self._phase("3", "BUILD", "Building modules with review loop...")
-        self._build_all()
-        self._save_state()
+            # Phase 3: Build + Review (hard gate)
+            self._phase("3", "BUILD", "Building modules with review loop...")
+            self._build_all()
+            self._save_state()
 
-        # Phase 4: Integrate
-        self._phase("4", "INTEGRATE", "Wiring modules together...")
-        self.state.integration = self.integrator.run(
-            self.state.plan, self.state.artifacts
-        )
-        self._save_state()
+            # Phase 4: Integrate (hard gate)
+            self._phase("4", "INTEGRATE", "Wiring modules together...")
+            self.state.integration = self.integrator.run(
+                self.state.plan, self.state.artifacts
+            )
+            self._save_state()
 
-        # Phase 5: Write to disk
-        self._phase("5", "WRITE", "Writing project to disk...")
-        self._write_project()
-        self._save_state()
+            if not self.state.integration.success:
+                raise IntegrationFailedError(
+                    f"Integration failed with {len(self.state.integration.issues)} issues: "
+                    f"{self.state.integration.issues}"
+                )
 
-        # Phase 6: Setup environment
-        self._phase("6", "SETUP", "Installing dependencies...")
-        self._setup_environment()
-        self._save_state()
+            # Phase 5: Write to disk (path-safe)
+            self._phase("5", "WRITE", "Writing project to disk...")
+            self._write_project()
+            self._save_state()
 
-        # Phase 7: Execute + Debug loop
-        self._phase("7", "TEST & DEBUG", "Running tests and fixing failures...")
-        self._test_and_debug_loop()
-        self._save_state()
+            # Phase 6: Setup environment
+            self._phase("6", "SETUP", "Installing dependencies...")
+            self._setup_environment()
+            self._save_state()
 
-        # Phase 8: Optimize
-        self._phase("8", "OPTIMIZE", "Optimizing working code for performance and robustness...")
-        self._optimize()
-        self._save_state()
+            # Phase 7: Execute + Debug loop
+            self._phase("7", "TEST & DEBUG", "Running tests and fixing failures...")
+            self._test_and_debug_loop()
+            self._save_state()
 
-        # Phase 9: Acceptance
-        self._phase("9", "ACCEPTANCE", "Validating against original intent...")
-        self._acceptance_check()
-        self._save_state()
+            # Phase 8: Optimize
+            self._phase("8", "OPTIMIZE", "Optimizing working code for performance and robustness...")
+            self._optimize()
+            self._save_state()
+
+            # Phase 9: Acceptance
+            self._phase("9", "ACCEPTANCE", "Validating against original intent...")
+            self._acceptance_check()
+            self._save_state()
+
+        except (ModuleRejectedError, IntegrationFailedError, PipelineError) as e:
+            console.print(f"\n[bold red]PIPELINE STOPPED: {e}[/bold red]")
+            self._save_state()
 
         # Final report
         self._print_final_report()
@@ -135,7 +169,7 @@ class ArchitectAgent(Agent):
     # ==================================================================
 
     def _build_all(self) -> None:
-        """Build all modules batch by batch with parallel execution within batches."""
+        """Build all modules batch by batch. Failed modules are excluded from integration."""
         plan = self.state.plan
 
         for batch_idx, batch in enumerate(plan.build_order):
@@ -151,35 +185,55 @@ class ArchitectAgent(Agent):
                 for future in as_completed(futures):
                     mid = futures[future]
                     try:
-                        artifact = future.result()
+                        artifact, final_review = future.result()
                         self.state.artifacts[mid] = artifact
                         modules[mid].status = TaskStatus.APPROVED
+                    except ModuleRejectedError as e:
+                        console.print(f"  [bold red]{mid} REJECTED: {e.final_review.issues}[/bold red]")
+                        modules[mid].status = TaskStatus.FAILED
                     except Exception as e:
                         console.print(f"  [bold red]{mid} failed: {e}[/bold red]")
                         modules[mid].status = TaskStatus.FAILED
 
-    def _build_and_review(self, module: ModuleSpec, plan: BuildPlan) -> BuildArtifact:
-        """Build → review → revise loop for a single module."""
+        # Check if any modules were approved
+        approved = [m for m in plan.modules if m.status == TaskStatus.APPROVED]
+        if not approved:
+            raise PipelineError("No modules passed review — cannot proceed to integration")
+
+        failed = [m for m in plan.modules if m.status == TaskStatus.FAILED]
+        if failed:
+            console.print(
+                f"\n  [yellow]Warning: {len(failed)} module(s) rejected and excluded from integration: "
+                f"{[m.id for m in failed]}[/yellow]"
+            )
+
+    def _build_and_review(self, module: ModuleSpec, plan: BuildPlan) -> tuple[BuildArtifact, ReviewResult]:
+        """Build → review → revise loop. Returns (artifact, final_review).
+
+        Raises ModuleRejectedError if the module fails review after all revisions.
+        """
         module.status = TaskStatus.IN_PROGRESS
         artifact = self.builder.run(module, plan)
+        last_review = None
 
         for attempt in range(MAX_REVIEW_REVISIONS):
             module.status = TaskStatus.IN_REVIEW
             review = self.reviewer.run(module, artifact, plan)
             self.state.reviews.setdefault(module.id, []).append(review)
+            last_review = review
 
             if review.verdict == ReviewVerdict.APPROVE:
-                return artifact
+                return artifact, review
 
             self.log(f"{module.id}: revision {attempt + 1}/{MAX_REVIEW_REVISIONS}")
             module.status = TaskStatus.REVISION
             artifact = self.builder.run(module, plan, revision_feedback=review)
 
-        self.log(f"{module.id}: accepting after max revisions")
-        return artifact
+        # Exhausted revisions — hard failure
+        raise ModuleRejectedError(module.id, last_review)
 
     def _write_project(self) -> None:
-        """Write all generated files to the output directory."""
+        """Write all generated files to the output directory with path safety."""
         out = Path(self.output_dir)
         out.mkdir(parents=True, exist_ok=True)
         files_written = 0
@@ -188,22 +242,22 @@ class ArchitectAgent(Agent):
         if self.state.plan:
             for iface in self.state.plan.interfaces:
                 if iface.code:
-                    self._write_file(out / iface.file_path, iface.code)
+                    self._safe_write(iface.file_path, iface.code)
                     files_written += 1
 
         # Module files + tests
         for artifact in self.state.artifacts.values():
             for path, content in artifact.files.items():
-                self._write_file(out / path, content)
+                self._safe_write(path, content)
                 files_written += 1
             for path, content in artifact.tests.items():
-                self._write_file(out / path, content)
+                self._safe_write(path, content)
                 files_written += 1
 
         # Integration wiring
         if self.state.integration and self.state.integration.wiring_files:
             for path, content in self.state.integration.wiring_files.items():
-                self._write_file(out / path, content)
+                self._safe_write(path, content)
                 files_written += 1
 
         self.log(f"wrote {files_written} files to {out}")
@@ -212,12 +266,10 @@ class ArchitectAgent(Agent):
         """Run project setup commands (pip install, etc.)."""
         plan = self.state.plan
         if not plan or not plan.setup_commands:
-            # Fallback: create a venv and install if there's a requirements file
             default_setup = [
                 "python3 -m venv .venv",
                 ".venv/bin/pip install --upgrade pip",
             ]
-            # Check if we wrote a requirements.txt
             req_path = Path(self.output_dir) / "requirements.txt"
             if req_path.exists():
                 default_setup.append(".venv/bin/pip install -r requirements.txt")
@@ -239,7 +291,6 @@ class ArchitectAgent(Agent):
             self.state.debug_rounds = round_num + 1
             console.print(f"\n  [bold]Debug round {round_num + 1}/{MAX_DEBUG_ROUNDS}[/bold]")
 
-            # Run tests
             test_result = self.executor.run_tests(test_cmd)
             self.state.exec_history.append(test_result)
 
@@ -247,7 +298,6 @@ class ArchitectAgent(Agent):
                 console.print("  [bold green]All tests pass![/bold green]")
                 return
 
-            # Tests failed — get the debugger to fix it
             project_files = self._read_project_files()
             fix = self.debugger.run(
                 error=test_result,
@@ -256,8 +306,6 @@ class ArchitectAgent(Agent):
                 previous_fixes=previous_fixes if previous_fixes else None,
             )
             previous_fixes.append(fix)
-
-            # Apply the fix
             self._apply_fix(fix)
 
         console.print(f"  [yellow]Exhausted {MAX_DEBUG_ROUNDS} debug rounds[/yellow]")
@@ -267,7 +315,6 @@ class ArchitectAgent(Agent):
         plan = self.state.plan
         project_files = self._read_project_files()
 
-        # Get most recent passing test result for context
         test_results = [r for r in self.state.exec_history if r.success and ("test" in r.command.lower() or "pytest" in r.command.lower())]
         test_result = test_results[-1] if test_results else None
 
@@ -282,19 +329,16 @@ class ArchitectAgent(Agent):
             console.print("  [dim]No optimizations needed[/dim]")
             return
 
-        # Apply optimizations
         self.state.optimization_count = len(result.get("optimizations", []))
-        out = Path(self.output_dir)
+
         for path, content in file_changes.items():
-            self._write_file(out / path, content)
+            self._safe_write(path, content)
             self.log(f"  optimized {path}")
 
-        # Install any new deps
         for dep in result.get("new_dependencies", []):
             r = self.executor.run_command(self._venv_cmd(f"pip install {dep}"))
             self.state.exec_history.append(r)
 
-        # Re-run tests to make sure optimizations didn't break anything
         console.print("\n  [bold]Re-running tests after optimization...[/bold]")
         test_cmd = self._venv_cmd(plan.test_command) if plan else "pytest -v"
         verify = self.executor.run_tests(test_cmd)
@@ -303,7 +347,6 @@ class ArchitectAgent(Agent):
         if verify.success:
             console.print("  [bold green]Tests still pass after optimization[/bold green]")
         else:
-            # Optimization broke something — roll back by re-running debug loop
             console.print("  [yellow]Optimization broke tests — entering debug loop to fix...[/yellow]")
             previous_fixes: list[DebugFix] = []
             for attempt in range(3):
@@ -330,15 +373,14 @@ class ArchitectAgent(Agent):
         plan = self.state.plan
         project_files = self._read_project_files()
 
-        # Get most recent test result
         test_results = [r for r in self.state.exec_history if "test" in r.command.lower() or "pytest" in r.command.lower()]
         test_result = test_results[-1] if test_results else None
 
-        # Try a smoke test
         smoke_result = None
         if plan and plan.run_command:
             run_cmd = self._venv_cmd(plan.run_command)
-            smoke_result = self.executor.smoke_test(run_cmd, timeout=15)
+            run_mode = getattr(plan, "run_mode", "batch")
+            smoke_result = self.executor.smoke_test(run_cmd, run_mode=run_mode)
             self.state.exec_history.append(smoke_result)
 
         self.state.acceptance = self.acceptance.run(
@@ -350,6 +392,19 @@ class ArchitectAgent(Agent):
         )
 
     # ==================================================================
+    # SAFE FILE OPERATIONS
+    # ==================================================================
+
+    def _safe_write(self, relative_path: str, content: str) -> None:
+        """Write a file, validating the path stays within the project root.
+
+        Raises PathTraversalError (which stops the pipeline) if the path escapes.
+        """
+        resolved = safe_output_path(self.output_dir, relative_path)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        resolved.write_text(content)
+
+    # ==================================================================
     # HELPERS
     # ==================================================================
 
@@ -357,7 +412,6 @@ class ArchitectAgent(Agent):
         """Prefix a command to use the project's venv if it exists."""
         venv = Path(self.output_dir) / ".venv" / "bin"
         if venv.exists():
-            # Replace bare python/pip/pytest with venv versions
             for tool in ("python", "pip", "pytest"):
                 if cmd.startswith(tool + " ") or cmd == tool:
                     return str(venv / tool) + cmd[len(tool):]
@@ -373,7 +427,6 @@ class ArchitectAgent(Agent):
             ):
                 try:
                     content = p.read_text(errors="replace")
-                    # Skip huge files
                     if len(content) < 50000:
                         files[str(p.relative_to(out))] = content
                 except Exception:
@@ -381,21 +434,15 @@ class ArchitectAgent(Agent):
         return files
 
     def _apply_fix(self, fix: DebugFix) -> None:
-        """Apply a debugger fix to the project files on disk."""
-        out = Path(self.output_dir)
+        """Apply a debugger fix to the project files on disk (path-safe)."""
         for path, content in fix.file_changes.items():
-            self._write_file(out / path, content)
+            self._safe_write(path, content)
             self.log(f"  patched {path}")
 
         if fix.new_dependencies:
-            # Try to install new deps
             for dep in fix.new_dependencies:
                 result = self.executor.run_command(self._venv_cmd(f"pip install {dep}"))
                 self.state.exec_history.append(result)
-
-    def _write_file(self, path: Path, content: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
 
     def _save_state(self) -> None:
         state_dir = Path(self.output_dir) / ".build_state"
