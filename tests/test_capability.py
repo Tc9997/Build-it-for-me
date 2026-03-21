@@ -13,6 +13,7 @@ from build_loop.contract import (
     BuildContract,
     CapabilityRequirement,
     CapabilityType,
+    HttpProbeSignal,
 )
 from build_loop.environment import EnvironmentSnapshot, ToolAvailability
 from build_loop.policy import AutonomyMode, evaluate_policy
@@ -197,3 +198,44 @@ class TestSystemToolCapability:
         decision = evaluate_policy(contract, env)
         assert decision.autonomy_mode == AutonomyMode.PROCEED
         assert any("ffmpeg" in w for w in decision.warnings)
+
+
+class TestVerifierImpliedDependencies:
+    """Policy must gate on tools the verifier needs, not just declared capabilities."""
+
+    def test_http_probe_without_curl_degrades(self):
+        """http_probe signals imply curl. Missing curl should degrade + skip verify."""
+        contract = _make_contract(
+            success_signals=[
+                HttpProbeSignal(description="health", path="/health"),
+            ],
+        )
+        # No curl in tools
+        env = _make_env(tools=[
+            ToolAvailability(name="git", available=True),
+        ])
+        decision = evaluate_policy(contract, env)
+        assert decision.autonomy_mode == AutonomyMode.DEGRADE
+        assert "system_tool:curl" in decision.blocked_capabilities
+        assert "verify" in decision.skip_phases
+
+    def test_http_probe_with_curl_proceeds(self):
+        """http_probe with curl available should not trigger degrade."""
+        contract = _make_contract(
+            success_signals=[
+                HttpProbeSignal(description="health", path="/health"),
+            ],
+        )
+        env = _make_env(tools=[
+            ToolAvailability(name="curl", available=True, version="8.0"),
+        ])
+        decision = evaluate_policy(contract, env)
+        assert decision.autonomy_mode == AutonomyMode.PROCEED
+
+    def test_no_http_probe_no_curl_check(self):
+        """Without http_probe signals, missing curl doesn't matter."""
+        contract = _make_contract()  # No signals
+        env = _make_env(tools=[])  # No tools
+        decision = evaluate_policy(contract, env)
+        assert decision.autonomy_mode == AutonomyMode.PROCEED
+        assert "system_tool:curl" not in decision.blocked_capabilities

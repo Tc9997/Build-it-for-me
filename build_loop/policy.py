@@ -16,7 +16,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-from build_loop.contract import BuildContract, CapabilityType
+from build_loop.contract import BuildContract, CapabilityType, HttpProbeSignal, SchemaValidSignal
 from build_loop.environment import EnvironmentSnapshot
 
 SCHEMA_VERSION = "1"
@@ -110,6 +110,26 @@ def evaluate_policy(
                 f"Optional capability '{cap.name}' ({cap.type.value}) is not available. "
                 "Some features may be degraded."
             )
+
+    # ----- Rule: verifier-implied tool dependencies -----
+    # Success signals imply tools the verifier needs at runtime.
+    # If those tools are missing, verification will fail — gate early.
+    _signal_tool_deps: dict[type, str] = {
+        HttpProbeSignal: "curl",
+    }
+    for signal in contract.success_signals:
+        tool_name = _signal_tool_deps.get(type(signal))
+        if tool_name:
+            tool_available = _check_capability(CapabilityType.SYSTEM_TOOL, env, tool_name)
+            if not tool_available:
+                mode = _escalate(mode, AutonomyMode.DEGRADE)
+                blocked.append(f"system_tool:{tool_name}")
+                skip.append("verify")
+                reasons.append(
+                    f"Contract has {type(signal).__name__} signals but "
+                    f"'{tool_name}' is not available. Verify phase will be skipped."
+                )
+                break  # One missing tool is enough to skip verify
 
     # ----- Rule: service mode needs process management -----
     if contract.run_mode == "service":
