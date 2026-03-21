@@ -74,6 +74,10 @@ class ResearchReport(BaseModel):
         default_factory=list,
         description="Steps to prepare the environment (install X, start Y, etc.)"
     )
+    reference_repos: list[str] = Field(
+        default_factory=list,
+        description="GitHub repos to use as implementation reference (owner/name)"
+    )
     open_questions: list[str] = Field(default_factory=list)
 
 
