@@ -327,7 +327,9 @@ class TestCheckpointEnforcement:
 
             agent.planner.run = MagicMock(return_value=BuildPlan(
                 project_name="test", description="test", tech_stack=["python"],
-                modules=[], build_order=[],
+                modules=[ModuleSpec(id="stub", name="stub", description="stub", size=TaskSize.SMALL)],
+                build_order=[["stub"]],
+                goals_covered={"test": ["stub"]},
             ))
             agent.integrator.run = MagicMock(return_value=IntegrationResult(
                 modules_integrated=[], success=True,
@@ -429,7 +431,9 @@ class TestDegradeEnforcement:
 
             agent.planner.run = MagicMock(return_value=BuildPlan(
                 project_name="test", description="test", tech_stack=["python"],
-                modules=[], build_order=[],
+                modules=[ModuleSpec(id="stub", name="stub", description="stub", size=TaskSize.SMALL)],
+                build_order=[["stub"]],
+                goals_covered={"test": ["stub"]},
             ))
             agent.integrator.run = MagicMock(return_value=IntegrationResult(
                 modules_integrated=[], success=True,
@@ -487,3 +491,48 @@ class TestAcceptanceWithoutVerification:
         # Even though LLM said pass, verdict must be INCOMPLETE
         assert result.verdict == AcceptanceVerdict.INCOMPLETE
         assert "skipped" in result.notes.lower() or "cannot confirm" in result.notes.lower()
+
+
+# =========================================================================
+# Plan coverage validation is a hard gate
+# =========================================================================
+
+class TestPlanCoverageGate:
+    """Invalid plan coverage must stop the pipeline."""
+
+    def test_uncovered_goals_stop_pipeline(self):
+        """A plan missing contract goals should not reach build phase."""
+        from build_loop.schemas import ModuleSpec, TaskSize
+
+        agent = ArchitectAgent(output_dir="/tmp/test-build-loop-plancov")
+
+        agent.researcher.run = MagicMock(return_value=ResearchReport(
+            feasibility="test", recommended_stack=["python"],
+        ))
+        agent.spec_compiler.run = MagicMock(return_value=BuildContract(
+            project_name="test", summary="test",
+            goals=["goal A", "goal B"],
+            acceptance_criteria=["test"],
+        ))
+
+        with patch("build_loop.agents.architect.capture_snapshot") as mock_snap:
+            mock_snap.return_value = EnvironmentSnapshot(
+                os_name="Test", arch="x86_64",
+                python_version="3.12", python_path="/usr/bin/python3",
+                output_dir_writable=True,
+            )
+
+            # Planner returns a plan that only covers goal A, not goal B
+            agent.planner.run = MagicMock(return_value=BuildPlan(
+                project_name="test", description="test", tech_stack=["python"],
+                modules=[ModuleSpec(id="mod_a", name="A", description="test", size=TaskSize.SMALL)],
+                build_order=[["mod_a"]],
+                goals_covered={"goal A": ["mod_a"]},
+                # goal B is missing!
+            ))
+
+            agent._build_all = MagicMock()
+            agent.run("test idea")
+
+            # Build should never have been called — plan validation gate stopped it
+            agent._build_all.assert_not_called()

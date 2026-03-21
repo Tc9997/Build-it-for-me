@@ -122,7 +122,7 @@ class BuildPlan(BaseModel):
       - goals_covered: maps each contract goal to module IDs that address it
       - non_goals_acknowledged: planner confirms these are out of scope
     """
-    schema_version: str = "1"
+    schema_version: Literal["1"] = "1"
     project_name: str
     description: str
 

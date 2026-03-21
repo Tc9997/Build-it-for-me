@@ -179,17 +179,16 @@ class ArchitectAgent(Agent):
                 if not self.state.plan.contract_hash:
                     self.state.plan.contract_hash = contract_hash
 
-            # Validate plan covers the contract
+            # Validate plan covers the contract — hard gate
             validation = validate_plan_coverage(self.state.plan, self.contract)
+            for warn in validation.warnings:
+                console.print(f"  [dim]Plan warning: {warn}[/dim]")
             if not validation.valid:
                 for err in validation.errors:
                     console.print(f"  [bold red]Plan error: {err}[/bold red]")
-                console.print(
-                    f"  [yellow]Plan has {len(validation.errors)} coverage error(s). "
-                    f"Proceeding with warnings — builder may produce incomplete output.[/yellow]"
+                raise PipelineError(
+                    f"Plan does not cover contract: {validation.errors}"
                 )
-            for warn in validation.warnings:
-                console.print(f"  [dim]Plan warning: {warn}[/dim]")
 
             self._print_plan()
             self._save_state()

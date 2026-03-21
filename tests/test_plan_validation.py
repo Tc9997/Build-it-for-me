@@ -128,8 +128,16 @@ class TestContractHash:
 
 
 class TestBuildPlanVersioned:
-    """BuildPlan must carry schema_version."""
+    """BuildPlan schema_version must be Literal['1']."""
 
     def test_plan_has_schema_version(self):
         plan = _make_plan()
         assert plan.schema_version == "1"
+
+    def test_wrong_version_fails_validation(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            BuildPlan(
+                schema_version="99",
+                project_name="test", description="test",
+            )
