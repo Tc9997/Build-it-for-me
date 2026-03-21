@@ -1,4 +1,12 @@
-"""Acceptance tester: validates the built project against the original intent."""
+"""Acceptance agent: summarizes residual gaps after verification.
+
+The verifier is the authority for machine-checkable pass/fail. This agent
+does NOT overwrite verifier verdicts. It only:
+  1. Reports the verifier's results
+  2. Identifies residual gaps: acceptance criteria, behavioral expectations,
+     and invariants that have no corresponding machine-checkable signal
+  3. Uses LLM judgment ONLY for those uncovered residual items
+"""
 
 from __future__ import annotations
 
@@ -9,36 +17,32 @@ from build_loop.schemas import AcceptanceResult, BuildPlan, ExecResult
 
 
 SYSTEM = """\
-You are the Acceptance Tester agent in an automated build system. Your job is to determine \
-whether a completed project actually fulfills the user's original intent.
+You are the Acceptance agent in an automated build system. An independent verifier \
+has already executed machine-checkable signals and produced authoritative pass/fail results.
 
-You receive:
-- The original idea/request
-- The build plan
-- The project files
-- Test results and execution output
+Your job is to assess ONLY the residual gaps — things the verifier could not check:
+- Uncovered behavioral expectations
+- Uncovered invariants
+- Acceptance criteria that have no machine-checkable signal
 
 You MUST respond with a single JSON object:
 
 {
   "verdict": "pass" | "fail",
-  "criteria_checked": ["list of things you verified"],
-  "criteria_passed": ["things that work correctly"],
+  "criteria_checked": ["list of ALL criteria assessed (verified + residual)"],
+  "criteria_passed": ["things confirmed working (by verifier or by your assessment)"],
   "criteria_failed": ["things that don't work or are missing"],
-  "notes": "string — overall assessment and any caveats"
+  "notes": "string — overall assessment"
 }
 
 Rules:
-- Break the original idea into concrete, testable acceptance criteria.
-- Be practical — if the user asked for "a bot to scrape wine auctions", check that:
-  - There's actual scraping logic targeting a real site
-  - Data is parsed into a usable format
-  - There's some recommendation/scoring mechanism
-  - The code runs without errors
-- Don't fail for cosmetic issues. Fail for: missing core functionality, broken execution, \
-  wrong output format, missing critical integration.
-- If tests pass but the code clearly doesn't do what was asked, that's a FAIL.
-- If the code works but lacks polish (no CLI help text, basic error messages), that's still a PASS.
+- NEVER overwrite verifier results. If the verifier says a signal passed, it passed. \
+  If the verifier says it failed, it failed.
+- For verified signals: just carry them forward into criteria_checked and criteria_passed/failed.
+- For uncovered behavioral expectations and invariants: assess them based on the project files \
+  and note that they are "assessed by code review, not execution."
+- verdict should be "fail" if ANY verifier signal failed OR if critical uncovered gaps exist.
+- verdict should be "pass" only if all verifier signals passed AND no critical residual gaps.
 - Respond with ONLY the JSON object, no markdown fences, no commentary.
 """
 
@@ -52,37 +56,43 @@ class AcceptanceAgent(Agent):
         idea: str,
         plan: BuildPlan,
         project_files: dict[str, str],
-        test_result: ExecResult | None = None,
+        verification=None,
         smoke_result: ExecResult | None = None,
     ) -> AcceptanceResult:
-        prompt_parts = [
-            f"ORIGINAL IDEA:\n{idea}",
-            f"\nBUILD PLAN:\n{json.dumps(plan.model_dump(), indent=2)}",
-            f"\nPROJECT FILES:\n{json.dumps(project_files, indent=2)}",
-        ]
+        prompt_parts = [f"ORIGINAL IDEA:\n{idea}"]
 
-        if test_result:
+        if verification:
             prompt_parts.append(
-                f"\nTEST RESULTS:\n"
-                f"Command: {test_result.command}\n"
-                f"Exit code: {test_result.exit_code}\n"
-                f"Stdout: {test_result.stdout}\n"
-                f"Stderr: {test_result.stderr}"
+                f"\nVERIFICATION RESULT (authoritative — do not overwrite):\n"
+                f"{json.dumps(verification.model_dump(), indent=2)}"
             )
+
+        prompt_parts.append(
+            f"\nPROJECT FILES:\n{json.dumps(project_files, indent=2)}"
+        )
 
         if smoke_result:
             prompt_parts.append(
                 f"\nSMOKE TEST:\n"
                 f"Command: {smoke_result.command}\n"
                 f"Exit code: {smoke_result.exit_code}\n"
-                f"Stdout: {smoke_result.stdout}\n"
-                f"Stderr: {smoke_result.stderr}"
+                f"Stdout: {smoke_result.stdout[:1000]}\n"
+                f"Stderr: {smoke_result.stderr[:1000]}"
             )
 
         data = self.call_json("\n".join(prompt_parts))
         result = AcceptanceResult(**data)
+
+        # Hard constraint: if verifier failed, acceptance cannot pass
+        if verification and not verification.passed:
+            if result.verdict.value == "pass":
+                result.verdict = "fail"
+                result.notes = (
+                    f"Overridden: verifier reported failures. {result.notes}"
+                )
+
         self.log(
-            f"verdict: {result.verdict.value} — "
+            f"verdict: {result.verdict} — "
             f"{len(result.criteria_passed)}/{len(result.criteria_checked)} criteria passed"
         )
         return result

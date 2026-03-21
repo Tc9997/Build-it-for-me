@@ -222,5 +222,6 @@ class BuildState(BaseModel):
     exec_history: list[ExecResult] = Field(default_factory=list)
     debug_rounds: int = 0
     optimization_count: int = 0
+    verification: dict | None = Field(default=None, description="Serialized VerificationResult")
     acceptance: AcceptanceResult | None = None
     output_dir: str = ""

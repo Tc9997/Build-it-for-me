@@ -16,7 +16,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-from build_loop.contract import BuildContract
+from build_loop.contract import BuildContract, CapabilityType
 from build_loop.environment import EnvironmentSnapshot
 
 SCHEMA_VERSION = "1"
@@ -93,35 +93,23 @@ def evaluate_policy(
         )
         confirm.append("setup")
 
-    # ----- Rule: external dependencies need Docker or network -----
-    if contract.external_dependencies:
-        needs_docker = any(
-            kw in dep.lower()
-            for dep in contract.external_dependencies
-            for kw in ["docker", "container", "redis", "postgres", "mongo", "qdrant"]
-        )
-        if needs_docker and not env.docker_available:
+    # ----- Rule: capability requirements vs environment -----
+    for cap in contract.capability_requirements:
+        available = _check_capability(cap.type, env)
+        if not available and cap.required:
             mode = _escalate(mode, AutonomyMode.DEGRADE)
-            blocked.append("docker")
+            blocked.append(f"{cap.type.value}:{cap.name}")
+            phases_affected = cap.affects_phases or ["setup", "test", "optimize"]
+            skip.extend(phases_affected)
             reasons.append(
-                "Contract requires containerized services but Docker is not available. "
-                "Setup, test, and optimize phases will be skipped."
+                f"Contract requires {cap.type.value} capability '{cap.name}' "
+                f"but it is not available. Phases {phases_affected} will be skipped."
             )
-            skip.extend(["setup", "test", "optimize"])
-
-        needs_network = any(
-            kw in dep.lower()
-            for dep in contract.external_dependencies
-            for kw in ["api", "http", "webhook", "oauth", "endpoint"]
-        )
-        if needs_network and not env.network_available:
-            mode = _escalate(mode, AutonomyMode.DEGRADE)
-            blocked.append("network")
-            reasons.append(
-                "Contract requires network access but network is unavailable. "
-                "Test and optimize phases will be skipped."
+        elif not available and not cap.required:
+            warnings.append(
+                f"Optional capability '{cap.name}' ({cap.type.value}) is not available. "
+                "Some features may be degraded."
             )
-            skip.extend(["test", "optimize"])
 
     # ----- Rule: service mode needs process management -----
     if contract.run_mode == "service":
@@ -174,6 +162,28 @@ _MODE_SEVERITY = {
     AutonomyMode.DEGRADE: 2,
     AutonomyMode.REFUSE: 3,
 }
+
+
+def _check_capability(cap_type: CapabilityType, env: EnvironmentSnapshot) -> bool:
+    """Check if the environment satisfies a capability requirement.
+
+    Deterministic — maps capability types to environment fields.
+    """
+    if cap_type == CapabilityType.DOCKER:
+        return env.docker_available
+    elif cap_type == CapabilityType.NETWORK:
+        return env.network_available
+    elif cap_type == CapabilityType.SERVICE:
+        # Services typically need Docker or network; check both
+        return env.docker_available or env.network_available
+    elif cap_type == CapabilityType.SYSTEM_TOOL:
+        # Can't check specific tools from just the type — assume available
+        # (future: match against env.tools by name)
+        return True
+    elif cap_type == CapabilityType.HARDWARE:
+        # Can't detect hardware from snapshot — always missing
+        return False
+    return True
 
 
 def _escalate(current: AutonomyMode, proposed: AutonomyMode) -> AutonomyMode:

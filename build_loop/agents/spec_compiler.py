@@ -31,7 +31,14 @@ You MUST respond with a single JSON object matching this schema:
   "constraints": ["hard requirements: language, framework, licensing, performance bounds"],
   "target_runtime": "string — e.g. python3.11+",
   "run_mode": "batch | service",
-  "external_dependencies": ["APIs, databases, Docker images, hardware needed"],
+  "capability_requirements": [
+    {
+      "type": "docker | network | hardware | service | system_tool",
+      "name": "human-readable name, e.g. Redis, ffmpeg",
+      "required": true,
+      "affects_phases": ["setup", "test", "optimize"]
+    }
+  ],
   "secrets_required": ["ENV_VAR_NAME — API keys, tokens that must be set"],
   "acceptance_criteria": ["human-readable criteria for 'done'"],
   "success_signals": [

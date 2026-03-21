@@ -16,7 +16,7 @@ from build_loop.agents.architect import (
     ModuleRejectedError,
 )
 from build_loop.agents.executor import ExecutorAgent
-from build_loop.contract import BuildContract
+from build_loop.contract import BuildContract, CapabilityRequirement, CapabilityType
 from build_loop.environment import EnvironmentSnapshot
 from build_loop.agents.architect import PipelineError
 from build_loop.policy import AutonomyMode, PolicyDecision
@@ -411,7 +411,12 @@ class TestDegradeEnforcement:
         agent.spec_compiler.run = MagicMock(return_value=BuildContract(
             project_name="test", summary="test",
             goals=["test"], acceptance_criteria=["test"],
-            external_dependencies=["Docker container for Redis"],
+            capability_requirements=[
+                CapabilityRequirement(
+                    type=CapabilityType.DOCKER, name="Redis",
+                    required=True, affects_phases=["setup", "test", "optimize"],
+                ),
+            ],
         ))
 
         with patch("build_loop.agents.architect.capture_snapshot") as mock_snap:

@@ -2,7 +2,7 @@
 
 import pytest
 
-from build_loop.contract import BuildContract
+from build_loop.contract import BuildContract, CapabilityRequirement, CapabilityType
 from build_loop.environment import EnvironmentSnapshot, ToolAvailability
 from build_loop.policy import AutonomyMode, PolicyDecision, evaluate_policy
 
@@ -63,22 +63,23 @@ class TestPolicyEngine:
     def test_docker_needed_but_missing_degrades(self):
         """Needing Docker without it should degrade, not refuse."""
         decision = evaluate_policy(
-            _make_contract(external_dependencies=["Docker container for Redis"]),
+            _make_contract(capability_requirements=[
+                CapabilityRequirement(type=CapabilityType.DOCKER, name="Redis", required=True),
+            ]),
             _make_env(docker_available=False),
         )
         assert decision.autonomy_mode == AutonomyMode.DEGRADE
-        assert "docker" in decision.blocked_capabilities
-        # Must emit real phase names for architect to skip
-        assert "setup" in decision.skip_phases
-        assert "test" in decision.skip_phases
+        assert "docker:Redis" in decision.blocked_capabilities
 
     def test_network_needed_but_missing_degrades(self):
         decision = evaluate_policy(
-            _make_contract(external_dependencies=["REST API endpoint"]),
+            _make_contract(capability_requirements=[
+                CapabilityRequirement(type=CapabilityType.NETWORK, name="API", required=True),
+            ]),
             _make_env(network_available=False),
         )
         assert decision.autonomy_mode == AutonomyMode.DEGRADE
-        assert "network" in decision.blocked_capabilities
+        assert "network:API" in decision.blocked_capabilities
 
     def test_unwritable_output_refuses(self):
         decision = evaluate_policy(

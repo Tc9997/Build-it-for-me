@@ -14,6 +14,7 @@ own model with only the fields that type requires.
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field, model_validator
@@ -126,6 +127,35 @@ class Invariant(StrictModel):
 
 
 # ---------------------------------------------------------------------------
+# Capability requirements — typed external dependencies
+# ---------------------------------------------------------------------------
+
+class CapabilityType(str, Enum):
+    """Types of external capabilities a project may require."""
+    DOCKER = "docker"         # Needs Docker to run containers
+    NETWORK = "network"       # Needs outbound network access
+    HARDWARE = "hardware"     # Needs specific hardware (GPIO, Bluetooth, GPU)
+    SERVICE = "service"       # Needs an external service running (DB, cache, queue)
+    SYSTEM_TOOL = "system_tool"  # Needs a CLI tool installed (ffmpeg, wkhtmltopdf)
+
+
+class CapabilityRequirement(StrictModel):
+    """A typed external dependency.
+
+    Policy matches on `type`, not on substring search through free text.
+    `affects_phases` declares which pipeline phases are blocked without
+    this capability.
+    """
+    type: CapabilityType
+    name: str = Field(description="Human-readable name, e.g. 'Redis', 'ffmpeg'")
+    required: bool = Field(default=True, description="True = hard requirement, False = optional enhancement")
+    affects_phases: list[str] = Field(
+        default_factory=lambda: ["setup", "test", "optimize"],
+        description="Pipeline phases blocked if this capability is missing"
+    )
+
+
+# ---------------------------------------------------------------------------
 # The contract itself
 # ---------------------------------------------------------------------------
 
@@ -166,10 +196,10 @@ class BuildContract(StrictModel):
         description="'batch' for CLI/scripts, 'service' for servers/bots/watchers"
     )
 
-    # Dependencies
-    external_dependencies: list[str] = Field(
+    # Capability requirements (typed, not prose)
+    capability_requirements: list[CapabilityRequirement] = Field(
         default_factory=list,
-        description="APIs, databases, Docker images, hardware — things outside pip"
+        description="Structured external dependencies with typed capabilities"
     )
     secrets_required: list[str] = Field(
         default_factory=list,

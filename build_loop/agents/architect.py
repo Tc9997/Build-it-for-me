@@ -1,7 +1,8 @@
 """Architect agent: the orchestrator.
 
 Takes an idea and autonomously delivers a working project through:
-  RESEARCH → PLAN → BUILD → REVIEW → INTEGRATE → WRITE → SETUP → TEST+DEBUG → OPTIMIZE → ACCEPT
+  RESEARCH → CONTRACT → ENV → POLICY → PLAN → BUILD → INTEGRATE → WRITE →
+  SETUP → TEST+DEBUG → VERIFY → OPTIMIZE → ACCEPT
 
 Every phase gate is a hard control-flow decision. Model output is validated
 before any side effect. Review rejection blocks integration. Integration
@@ -30,6 +31,7 @@ from build_loop.agents.executor import ExecutorAgent
 from build_loop.agents.debugger import DebuggerAgent
 from build_loop.agents.optimizer import OptimizerAgent
 from build_loop.agents.acceptance import AcceptanceAgent
+from build_loop.verifier import Verifier, VerificationResult
 from build_loop.contract import BuildContract
 from build_loop.environment import EnvironmentSnapshot, capture_snapshot
 from build_loop.policy import AutonomyMode, PolicyDecision, evaluate_policy
@@ -95,6 +97,7 @@ class ArchitectAgent(Agent):
         self.integrator = IntegratorAgent()
         self.executor = ExecutorAgent(self.output_dir)
         self.debugger = DebuggerAgent()
+        self.verifier = Verifier(self.output_dir)
         self.optimizer = OptimizerAgent()
         self.acceptance = AcceptanceAgent()
 
@@ -208,19 +211,27 @@ class ArchitectAgent(Agent):
             else:
                 self._phase("10", "TEST & DEBUG", "[SKIPPED by policy — degraded mode]")
 
-            # Phase 11: Optimize (skippable in DEGRADE)
+            # Phase 11: Verify (contract-derived, independent of builder tests)
+            if not self._should_skip("verify"):
+                self._phase("11", "VERIFY", "Independent verification against contract signals...")
+                self._verify()
+                self._save_state()
+            else:
+                self._phase("11", "VERIFY", "[SKIPPED by policy — degraded mode]")
+
+            # Phase 12: Optimize (skippable in DEGRADE)
             if not self._should_skip("optimize"):
-                self._phase("11", "OPTIMIZE", "Optimizing working code for performance and robustness...")
+                self._phase("12", "OPTIMIZE", "Optimizing working code for performance and robustness...")
                 self._optimize()
                 self._save_state()
             else:
-                self._phase("11", "OPTIMIZE", "[SKIPPED by policy — degraded mode]")
+                self._phase("12", "OPTIMIZE", "[SKIPPED by policy — degraded mode]")
 
             # CHECKPOINT gate: acceptance requires confirmation
             self._checkpoint_gate("acceptance")
 
-            # Phase 12: Acceptance
-            self._phase("12", "ACCEPTANCE", "Validating against original intent...")
+            # Phase 13: Acceptance (consumes VerificationResult, not raw prose)
+            self._phase("13", "ACCEPTANCE", "Final acceptance against contract + verification...")
             self._acceptance_check()
             self._save_state()
 
@@ -436,14 +447,30 @@ class ArchitectAgent(Agent):
 
             console.print("  [yellow]Could not fix optimization breakage — results may be degraded[/yellow]")
 
+    def _verify(self) -> None:
+        """Run the independent verifier against contract signals.
+
+        The verifier is the authority for pass/fail. It executes contract
+        signals deterministically, not via LLM judgment.
+        """
+        if not self.contract:
+            return
+        verification = self.verifier.run(self.contract)
+        self.state.verification = verification.model_dump()
+        self._verification_result = verification
+
     def _acceptance_check(self) -> None:
-        """Run acceptance testing against the original idea."""
+        """Final acceptance: consumes VerificationResult + residual gaps.
+
+        The verifier is authoritative for machine-checkable signals.
+        Acceptance only summarizes residual non-machine-checkable gaps
+        (uncovered behavioral expectations, invariants, acceptance_criteria
+        not covered by signals). It does NOT overwrite verifier verdicts.
+        """
         plan = self.state.plan
-        project_files = self._read_project_files()
+        verification = getattr(self, "_verification_result", None)
 
-        test_results = [r for r in self.state.exec_history if "test" in r.command.lower() or "pytest" in r.command.lower()]
-        test_result = test_results[-1] if test_results else None
-
+        # Smoke test for service-mode projects
         smoke_result = None
         if plan and plan.run_command:
             run_cmd = self._venv_cmd(plan.run_command)
@@ -454,8 +481,8 @@ class ArchitectAgent(Agent):
         self.state.acceptance = self.acceptance.run(
             idea=self.state.idea,
             plan=plan,
-            project_files=project_files,
-            test_result=test_result,
+            project_files=self._read_project_files(),
+            verification=verification,
             smoke_result=smoke_result,
         )
 

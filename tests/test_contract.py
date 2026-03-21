@@ -7,6 +7,8 @@ from build_loop.contract import (
     SCHEMA_VERSION,
     BehavioralExpectation,
     BuildContract,
+    CapabilityRequirement,
+    CapabilityType,
     CliExitSignal,
     FileExistsSignal,
     HttpProbeSignal,
@@ -56,7 +58,9 @@ class TestBuildContract:
             constraints=["Python 3.12", "No Selenium"],
             target_runtime="python3.12",
             run_mode="batch",
-            external_dependencies=["acker.com website"],
+            capability_requirements=[
+                CapabilityRequirement(type=CapabilityType.NETWORK, name="acker.com"),
+            ],
             secrets_required=[],
             acceptance_criteria=["Outputs CSV with lot data"],
             success_signals=[
