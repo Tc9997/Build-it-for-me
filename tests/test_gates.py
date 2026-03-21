@@ -453,3 +453,37 @@ class TestDegradeEnforcement:
             agent._optimize.assert_not_called()
             # Acceptance still happens
             agent._acceptance_check.assert_called_once()
+
+
+# =========================================================================
+# No verification = INCOMPLETE verdict
+# =========================================================================
+
+class TestAcceptanceWithoutVerification:
+    """Acceptance without verification must yield INCOMPLETE, not PASS."""
+
+    def test_no_verification_yields_incomplete(self):
+        from build_loop.agents.acceptance import AcceptanceAgent
+        from build_loop.schemas import AcceptanceResult, AcceptanceVerdict
+
+        agent = AcceptanceAgent()
+
+        # Mock the LLM call to return a "pass" verdict
+        agent.call_json = MagicMock(return_value={
+            "verdict": "pass",
+            "criteria_checked": ["looks good"],
+            "criteria_passed": ["looks good"],
+            "criteria_failed": [],
+            "notes": "LLM says pass",
+        })
+
+        result = agent.run(
+            idea="test",
+            plan=BuildPlan(project_name="test", description="test", tech_stack=["python"]),
+            project_files={},
+            verification=None,  # No verification
+        )
+
+        # Even though LLM said pass, verdict must be INCOMPLETE
+        assert result.verdict == AcceptanceVerdict.INCOMPLETE
+        assert "skipped" in result.notes.lower() or "cannot confirm" in result.notes.lower()

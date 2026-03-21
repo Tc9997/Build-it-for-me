@@ -95,7 +95,7 @@ def evaluate_policy(
 
     # ----- Rule: capability requirements vs environment -----
     for cap in contract.capability_requirements:
-        available = _check_capability(cap.type, env)
+        available = _check_capability(cap.type, env, cap.name)
         if not available and cap.required:
             mode = _escalate(mode, AutonomyMode.DEGRADE)
             blocked.append(f"{cap.type.value}:{cap.name}")
@@ -164,10 +164,11 @@ _MODE_SEVERITY = {
 }
 
 
-def _check_capability(cap_type: CapabilityType, env: EnvironmentSnapshot) -> bool:
+def _check_capability(cap_type: CapabilityType, env: EnvironmentSnapshot, cap_name: str = "") -> bool:
     """Check if the environment satisfies a capability requirement.
 
     Deterministic — maps capability types to environment fields.
+    SYSTEM_TOOL matches against env.tools by name (case-insensitive).
     """
     if cap_type == CapabilityType.DOCKER:
         return env.docker_available
@@ -177,9 +178,12 @@ def _check_capability(cap_type: CapabilityType, env: EnvironmentSnapshot) -> boo
         # Services typically need Docker or network; check both
         return env.docker_available or env.network_available
     elif cap_type == CapabilityType.SYSTEM_TOOL:
-        # Can't check specific tools from just the type — assume available
-        # (future: match against env.tools by name)
-        return True
+        # Match against the tools detected in environment snapshot
+        name_lower = cap_name.lower()
+        return any(
+            t.available and t.name.lower() == name_lower
+            for t in env.tools
+        )
     elif cap_type == CapabilityType.HARDWARE:
         # Can't detect hardware from snapshot — always missing
         return False

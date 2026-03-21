@@ -14,7 +14,7 @@ from build_loop.contract import (
     CapabilityRequirement,
     CapabilityType,
 )
-from build_loop.environment import EnvironmentSnapshot
+from build_loop.environment import EnvironmentSnapshot, ToolAvailability
 from build_loop.policy import AutonomyMode, evaluate_policy
 
 
@@ -142,3 +142,58 @@ class TestCapabilityMatching:
         # No docker, but network available
         decision = evaluate_policy(contract, _make_env(docker_available=False, network_available=True))
         assert decision.autonomy_mode == AutonomyMode.PROCEED
+
+
+class TestSystemToolCapability:
+    """SYSTEM_TOOL must check env.tools by name, not assume available."""
+
+    def test_tool_present_proceeds(self):
+        contract = _make_contract(capability_requirements=[
+            CapabilityRequirement(type=CapabilityType.SYSTEM_TOOL, name="git", required=True),
+        ])
+        env = _make_env(tools=[
+            ToolAvailability(name="git", available=True, version="2.40.0"),
+        ])
+        decision = evaluate_policy(contract, env)
+        assert decision.autonomy_mode == AutonomyMode.PROCEED
+
+    def test_tool_missing_degrades(self):
+        contract = _make_contract(capability_requirements=[
+            CapabilityRequirement(type=CapabilityType.SYSTEM_TOOL, name="ffmpeg", required=True),
+        ])
+        env = _make_env(tools=[
+            ToolAvailability(name="git", available=True),
+            ToolAvailability(name="curl", available=True),
+        ])
+        decision = evaluate_policy(contract, env)
+        assert decision.autonomy_mode == AutonomyMode.DEGRADE
+        assert "system_tool:ffmpeg" in decision.blocked_capabilities
+
+    def test_tool_in_list_but_not_available_degrades(self):
+        """Tool is in the snapshot but marked unavailable."""
+        contract = _make_contract(capability_requirements=[
+            CapabilityRequirement(type=CapabilityType.SYSTEM_TOOL, name="docker", required=True),
+        ])
+        env = _make_env(tools=[
+            ToolAvailability(name="docker", available=False),
+        ])
+        decision = evaluate_policy(contract, env)
+        assert decision.autonomy_mode == AutonomyMode.DEGRADE
+
+    def test_tool_empty_tools_list_degrades(self):
+        """No tools detected at all — tool requirement degrades."""
+        contract = _make_contract(capability_requirements=[
+            CapabilityRequirement(type=CapabilityType.SYSTEM_TOOL, name="wkhtmltopdf", required=True),
+        ])
+        env = _make_env(tools=[])
+        decision = evaluate_policy(contract, env)
+        assert decision.autonomy_mode == AutonomyMode.DEGRADE
+
+    def test_optional_tool_missing_warns(self):
+        contract = _make_contract(capability_requirements=[
+            CapabilityRequirement(type=CapabilityType.SYSTEM_TOOL, name="ffmpeg", required=False),
+        ])
+        env = _make_env(tools=[])
+        decision = evaluate_policy(contract, env)
+        assert decision.autonomy_mode == AutonomyMode.PROCEED
+        assert any("ffmpeg" in w for w in decision.warnings)

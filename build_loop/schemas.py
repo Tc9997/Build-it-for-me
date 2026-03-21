@@ -41,6 +41,7 @@ class ReviewVerdict(str, Enum):
 class AcceptanceVerdict(str, Enum):
     PASS = "pass"
     FAIL = "fail"
+    INCOMPLETE = "incomplete"  # Verification was skipped — cannot confirm pass
 
 
 # ---------------------------------------------------------------------------

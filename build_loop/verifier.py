@@ -14,8 +14,9 @@ Tier 2 (contract-derived):
 Behavioral expectations and invariants that are not structurally executable
 are reported as UNCOVERED — not pretended to be verified.
 
-The verifier reuses the executor's service-aware smoke-test behavior for
-http_probe signals on service-mode projects.
+For service-mode projects with http_probe signals, the verifier starts the
+service process, waits for it to be ready, runs the probes, then terminates.
+This reuses the same liveness logic as the executor's service smoke test.
 """
 
 from __future__ import annotations
@@ -108,8 +109,19 @@ class Verifier:
     def log(self, msg: str) -> None:
         console.print(f"[bold blue][{self.name}][/bold blue] {msg}")
 
-    def run(self, contract: BuildContract) -> VerificationResult:
-        """Execute all verification tiers against the contract."""
+    def run(
+        self,
+        contract: BuildContract,
+        run_command: str | None = None,
+    ) -> VerificationResult:
+        """Execute all verification tiers against the contract.
+
+        Args:
+            contract: The BuildContract with signals to execute.
+            run_command: For service-mode projects, the command to start the
+                service. Required if contract has http_probe signals and
+                run_mode is "service".
+        """
         result = VerificationResult()
 
         # Tier 1: deterministic checks
@@ -122,14 +134,30 @@ class Verifier:
         self.log(f"  Tier 1: {t1_pass}/{len(result.tier1_results)} passed")
 
         # Tier 2: contract signal execution
-        self.log("Tier 2: contract signals...")
-        for signal in contract.success_signals:
-            sr = self._execute_signal(signal, contract.run_mode)
-            result.tier2_results.append(sr)
-            status = "[green]PASS[/green]" if sr.passed else "[red]FAIL[/red]"
-            self.log(f"  {status} [{sr.signal_type}] {sr.description}")
-            if not sr.passed and sr.detail:
-                self.log(f"    {sr.detail}")
+        # For service-mode with http_probe signals, manage the service lifecycle
+        has_http_probes = any(isinstance(s, HttpProbeSignal) for s in contract.success_signals)
+        service_proc = None
+
+        if contract.run_mode == "service" and has_http_probes and run_command:
+            service_proc = self._start_service(run_command)
+            if service_proc is None:
+                result.tier2_results.append(SignalResult(
+                    signal_type="service_start", description="Start service for http_probe",
+                    passed=False, detail=f"Failed to start service: {run_command}",
+                ))
+
+        try:
+            self.log("Tier 2: contract signals...")
+            for signal in contract.success_signals:
+                sr = self._execute_signal(signal, contract.run_mode)
+                result.tier2_results.append(sr)
+                status = "[green]PASS[/green]" if sr.passed else "[red]FAIL[/red]"
+                self.log(f"  {status} [{sr.signal_type}] {sr.description}")
+                if not sr.passed and sr.detail:
+                    self.log(f"    {sr.detail}")
+        finally:
+            if service_proc is not None:
+                self._stop_service(service_proc)
 
         result.tier2_passed = all(r.passed for r in result.tier2_results)
 
@@ -326,6 +354,54 @@ class Verifier:
             signal_type="import_check", description=signal.description,
             passed=passed, detail=detail,
         )
+
+    # ------------------------------------------------------------------
+    # Service lifecycle (for http_probe on service-mode projects)
+    # ------------------------------------------------------------------
+
+    def _start_service(self, run_command: str, startup_wait: float = 3.0) -> subprocess.Popen | None:
+        """Start a service process for http_probe verification.
+
+        Returns the Popen handle, or None if the service failed to start.
+        Waits startup_wait seconds, then checks the process is still alive.
+        """
+        try:
+            argv = safe_command(run_command)
+        except UnsafeCommandError as e:
+            self.log(f"  [red]Service command rejected: {e}[/red]")
+            return None
+
+        self.log(f"  Starting service: {run_command}")
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=str(self.project_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except FileNotFoundError:
+            self.log(f"  [red]Service command not found: {argv[0]}[/red]")
+            return None
+
+        time.sleep(startup_wait)
+
+        if proc.poll() is not None:
+            self.log(f"  [red]Service exited during startup (exit {proc.returncode})[/red]")
+            return None
+
+        self.log(f"  [green]Service alive after {startup_wait}s[/green]")
+        return proc
+
+    def _stop_service(self, proc: subprocess.Popen) -> None:
+        """Gracefully terminate a service process."""
+        self.log("  Stopping service...")
+        proc.terminate()
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
 
     def _check_schema_valid(self, signal: SchemaValidSignal) -> SignalResult:
         """Run a command, parse stdout as JSON, validate against schema."""

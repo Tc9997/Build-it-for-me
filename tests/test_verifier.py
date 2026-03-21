@@ -19,6 +19,7 @@ from build_loop.contract import (
     BuildContract,
     CliExitSignal,
     FileExistsSignal,
+    HttpProbeSignal,
     ImportCheckSignal,
     Invariant,
     StdoutContainsSignal,
@@ -236,3 +237,78 @@ class TestUncoveredItems:
         v = Verifier(str(tmp_path))
         result = v.run(contract)
         assert result.passed  # No signals to fail
+
+
+class TestServiceHttpProbe:
+    """http_probe on service-mode must start the service under verifier control."""
+
+    def test_http_probe_with_service_lifecycle(self, tmp_path):
+        """Verifier starts the service, probes it, and stops it."""
+        # Write a minimal HTTP server
+        server_script = tmp_path / "server.py"
+        server_script.write_text(
+            "from http.server import HTTPServer, BaseHTTPRequestHandler\n"
+            "class H(BaseHTTPRequestHandler):\n"
+            "    def do_GET(self):\n"
+            "        self.send_response(200)\n"
+            "        self.end_headers()\n"
+            "        self.wfile.write(b'ok')\n"
+            "    def log_message(self, *a): pass\n"
+            "HTTPServer(('127.0.0.1', 18732), H).serve_forever()\n"
+        )
+
+        contract = _make_contract(
+            run_mode="service",
+            success_signals=[
+                HttpProbeSignal(
+                    description="health check",
+                    path="http://127.0.0.1:18732/health",
+                    expect_status=200,
+                ),
+            ],
+        )
+        v = Verifier(str(tmp_path))
+        result = v.run(contract, run_command=f"{sys.executable} server.py")
+
+        http_results = [r for r in result.tier2_results if r.signal_type == "http_probe"]
+        assert len(http_results) == 1
+        assert http_results[0].passed
+
+    def test_http_probe_without_run_command_does_not_crash(self, tmp_path):
+        """http_probe on service-mode without run_command still runs (will fail, not crash)."""
+        contract = _make_contract(
+            run_mode="service",
+            success_signals=[
+                HttpProbeSignal(
+                    description="will fail",
+                    path="http://127.0.0.1:19999/nope",
+                    expect_status=200,
+                ),
+            ],
+        )
+        v = Verifier(str(tmp_path))
+        result = v.run(contract)  # No run_command
+        http_results = [r for r in result.tier2_results if r.signal_type == "http_probe"]
+        assert len(http_results) == 1
+        assert not http_results[0].passed  # Fails because no server running
+
+    def test_http_probe_batch_mode_no_service_start(self, tmp_path):
+        """In batch mode, http_probe should NOT attempt to start a service."""
+        contract = _make_contract(
+            run_mode="batch",
+            success_signals=[
+                HttpProbeSignal(
+                    description="batch probe",
+                    path="http://127.0.0.1:19998/nope",
+                    expect_status=200,
+                ),
+            ],
+        )
+        v = Verifier(str(tmp_path))
+        result = v.run(contract, run_command=f"{sys.executable} -c pass")
+        # Should not have started any service (batch mode)
+        http_results = [r for r in result.tier2_results if r.signal_type == "http_probe"]
+        assert len(http_results) == 1
+        # Fails because no server, but no service_start signal either
+        service_starts = [r for r in result.tier2_results if r.signal_type == "service_start"]
+        assert len(service_starts) == 0

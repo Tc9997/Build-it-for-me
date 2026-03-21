@@ -452,10 +452,16 @@ class ArchitectAgent(Agent):
 
         The verifier is the authority for pass/fail. It executes contract
         signals deterministically, not via LLM judgment.
+
+        For service-mode projects, passes the run_command so the verifier
+        can start the service before executing http_probe signals.
         """
         if not self.contract:
             return
-        verification = self.verifier.run(self.contract)
+        run_cmd = None
+        if self.state.plan and self.state.plan.run_command and self.contract.run_mode == "service":
+            run_cmd = self._venv_cmd(self.state.plan.run_command)
+        verification = self.verifier.run(self.contract, run_command=run_cmd)
         self.state.verification = verification.model_dump()
         self._verification_result = verification
 
@@ -683,8 +689,12 @@ class ArchitectAgent(Agent):
 
     def _print_final_report(self) -> None:
         acc = self.state.acceptance
-        status = "PASS" if acc and acc.verdict == AcceptanceVerdict.PASS else "FAIL"
-        color = "green" if status == "PASS" else "red"
+        if acc and acc.verdict == AcceptanceVerdict.PASS:
+            status, color = "PASS", "green"
+        elif acc and acc.verdict.value == "incomplete":
+            status, color = "INCOMPLETE", "yellow"
+        else:
+            status, color = "FAIL", "red"
 
         report = Table(title="Build Report")
         report.add_column("Metric", style="bold")

@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 
 from build_loop.agents.base import Agent
-from build_loop.schemas import AcceptanceResult, BuildPlan, ExecResult
+from build_loop.schemas import AcceptanceResult, AcceptanceVerdict, BuildPlan, ExecResult
 
 
 SYSTEM = """\
@@ -86,10 +86,17 @@ class AcceptanceAgent(Agent):
         # Hard constraint: if verifier failed, acceptance cannot pass
         if verification and not verification.passed:
             if result.verdict.value == "pass":
-                result.verdict = "fail"
+                result.verdict = AcceptanceVerdict.FAIL
                 result.notes = (
                     f"Overridden: verifier reported failures. {result.notes}"
                 )
+
+        # Hard constraint: if verification was never run, verdict is incomplete
+        if verification is None:
+            result.verdict = AcceptanceVerdict.INCOMPLETE
+            result.notes = (
+                f"Verification was skipped — cannot confirm pass. {result.notes}"
+            )
 
         self.log(
             f"verdict: {result.verdict} — "
