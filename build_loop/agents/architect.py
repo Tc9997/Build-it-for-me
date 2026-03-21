@@ -21,6 +21,7 @@ from rich.table import Table
 
 from build_loop.agents.base import Agent
 from build_loop.agents.researcher import ResearcherAgent
+from build_loop.agents.spec_compiler import SpecCompilerAgent
 from build_loop.agents.planner import PlannerAgent
 from build_loop.agents.builder import BuilderAgent
 from build_loop.agents.reviewer import ReviewerAgent
@@ -29,6 +30,9 @@ from build_loop.agents.executor import ExecutorAgent
 from build_loop.agents.debugger import DebuggerAgent
 from build_loop.agents.optimizer import OptimizerAgent
 from build_loop.agents.acceptance import AcceptanceAgent
+from build_loop.contract import BuildContract
+from build_loop.environment import EnvironmentSnapshot, capture_snapshot
+from build_loop.policy import AutonomyMode, PolicyDecision, evaluate_policy
 from build_loop.safety import PathTraversalError, safe_output_path
 from build_loop.schemas import (
     AcceptanceVerdict,
@@ -78,6 +82,7 @@ class ArchitectAgent(Agent):
 
         # Sub-agents
         self.researcher = ResearcherAgent()
+        self.spec_compiler = SpecCompilerAgent()
         self.planner = PlannerAgent()
         self.builder = BuilderAgent()
         self.reviewer = ReviewerAgent()
@@ -86,6 +91,11 @@ class ArchitectAgent(Agent):
         self.debugger = DebuggerAgent()
         self.optimizer = OptimizerAgent()
         self.acceptance = AcceptanceAgent()
+
+        # Populated during run
+        self.contract: BuildContract | None = None
+        self.env_snapshot: EnvironmentSnapshot | None = None
+        self.policy_decision: PolicyDecision | None = None
 
     # ==================================================================
     # MAIN ENTRY POINT
@@ -103,23 +113,57 @@ class ArchitectAgent(Agent):
             self._print_research()
             self._save_state()
 
-            # Phase 2: Plan
-            self._phase("2", "PLAN", "Decomposing into modules and interfaces...")
-            research_context = (
-                f"{idea}\n\nRESEARCH FINDINGS:\n"
-                f"{json.dumps(self.state.research.model_dump(), indent=2)}"
+            # Phase 2: Contract — compile prose + research into structured spec
+            self._phase("2", "CONTRACT", "Compiling build contract from idea + research...")
+            research_json = json.dumps(self.state.research.model_dump(), indent=2)
+            self.contract = self.spec_compiler.run(idea, research_json)
+            self.state.contract = self.contract.model_dump()
+            self._print_contract()
+            self._save_state()
+
+            # Phase 3: Environment snapshot — what's available on this machine
+            self._phase("3", "ENVIRONMENT", "Capturing host capabilities...")
+            self.env_snapshot = capture_snapshot(
+                output_dir=self.output_dir,
+                required_secrets=self.contract.secrets_required,
             )
-            self.state.plan = self.planner.run(research_context)
+            self.state.environment = self.env_snapshot.model_dump()
+            self._print_environment()
+            self._save_state()
+
+            # Phase 4: Policy — can we build this here?
+            self._phase("4", "POLICY", "Evaluating build feasibility...")
+            self.policy_decision = evaluate_policy(self.contract, self.env_snapshot)
+            self.state.policy = self.policy_decision.model_dump()
+            self._print_policy()
+            self._save_state()
+
+            # Gate: refuse stops the pipeline
+            if self.policy_decision.autonomy_mode == AutonomyMode.REFUSE:
+                raise PipelineError(
+                    f"Policy refused build: {self.policy_decision.reasons}"
+                )
+
+            # Phase 5: Plan — contract-driven, not prose-driven
+            self._phase("5", "PLAN", "Decomposing into modules and interfaces...")
+            plan_context = (
+                f"BUILD CONTRACT:\n{json.dumps(self.state.contract, indent=2)}\n\n"
+                f"RESEARCH FINDINGS:\n{research_json}"
+            )
+            self.state.plan = self.planner.run(plan_context)
+            # Carry run_mode from contract to plan
+            if self.contract:
+                self.state.plan.run_mode = self.contract.run_mode
             self._print_plan()
             self._save_state()
 
-            # Phase 3: Build + Review (hard gate)
-            self._phase("3", "BUILD", "Building modules with review loop...")
+            # Phase 6: Build + Review (hard gate)
+            self._phase("6", "BUILD", "Building modules with review loop...")
             self._build_all()
             self._save_state()
 
-            # Phase 4: Integrate (hard gate)
-            self._phase("4", "INTEGRATE", "Wiring modules together...")
+            # Phase 7: Integrate (hard gate)
+            self._phase("7", "INTEGRATE", "Wiring modules together...")
             self.state.integration = self.integrator.run(
                 self.state.plan, self.state.artifacts
             )
@@ -131,28 +175,28 @@ class ArchitectAgent(Agent):
                     f"{self.state.integration.issues}"
                 )
 
-            # Phase 5: Write to disk (path-safe)
-            self._phase("5", "WRITE", "Writing project to disk...")
+            # Phase 8: Write to disk (path-safe)
+            self._phase("8", "WRITE", "Writing project to disk...")
             self._write_project()
             self._save_state()
 
-            # Phase 6: Setup environment
-            self._phase("6", "SETUP", "Installing dependencies...")
+            # Phase 9: Setup environment
+            self._phase("9", "SETUP", "Installing dependencies...")
             self._setup_environment()
             self._save_state()
 
-            # Phase 7: Execute + Debug loop
-            self._phase("7", "TEST & DEBUG", "Running tests and fixing failures...")
+            # Phase 10: Execute + Debug loop
+            self._phase("10", "TEST & DEBUG", "Running tests and fixing failures...")
             self._test_and_debug_loop()
             self._save_state()
 
-            # Phase 8: Optimize
-            self._phase("8", "OPTIMIZE", "Optimizing working code for performance and robustness...")
+            # Phase 11: Optimize
+            self._phase("11", "OPTIMIZE", "Optimizing working code for performance and robustness...")
             self._optimize()
             self._save_state()
 
-            # Phase 9: Acceptance
-            self._phase("9", "ACCEPTANCE", "Validating against original intent...")
+            # Phase 12: Acceptance
+            self._phase("12", "ACCEPTANCE", "Validating against original intent...")
             self._acceptance_check()
             self._save_state()
 
@@ -466,6 +510,59 @@ class ArchitectAgent(Agent):
             console.print(f"  [bold]External:[/bold] {', '.join(r.external_services)}")
         if r.open_questions:
             console.print(f"  [yellow]Open questions:[/yellow] {r.open_questions}")
+
+    def _print_contract(self) -> None:
+        c = self.contract
+        if not c:
+            return
+        console.print(f"  [bold]Project:[/bold] {c.project_name}")
+        console.print(f"  [bold]Goals:[/bold]")
+        for g in c.goals:
+            console.print(f"    - {g}")
+        if c.non_goals:
+            console.print(f"  [bold]Non-goals:[/bold]")
+            for ng in c.non_goals:
+                console.print(f"    - [dim]{ng}[/dim]")
+        console.print(f"  [bold]Mode:[/bold] {c.run_mode}")
+        console.print(f"  [bold]Signals:[/bold] {len(c.success_signals)} checkable")
+        console.print(f"  [bold]Invariants:[/bold] {len(c.invariants)}")
+        if c.open_questions:
+            console.print(f"  [yellow]Open questions:[/yellow]")
+            for q in c.open_questions:
+                console.print(f"    ? {q}")
+
+    def _print_environment(self) -> None:
+        e = self.env_snapshot
+        if not e:
+            return
+        console.print(f"  [bold]OS:[/bold] {e.os_name} {e.os_version} ({e.arch})")
+        console.print(f"  [bold]Python:[/bold] {e.python_version}")
+        available = [t.name for t in e.tools if t.available]
+        missing = [t.name for t in e.tools if not t.available]
+        if available:
+            console.print(f"  [bold]Tools:[/bold] {', '.join(available)}")
+        if missing:
+            console.print(f"  [dim]Missing:[/dim] {', '.join(missing)}")
+        console.print(f"  [bold]Docker:[/bold] {'yes' if e.docker_available else 'no'}")
+        console.print(f"  [bold]Network:[/bold] {'yes' if e.network_available else 'no'}")
+        if e.secrets_missing:
+            console.print(f"  [yellow]Missing secrets:[/yellow] {e.secrets_missing}")
+
+    def _print_policy(self) -> None:
+        p = self.policy_decision
+        if not p:
+            return
+        color = {
+            AutonomyMode.PROCEED: "green",
+            AutonomyMode.CHECKPOINT: "yellow",
+            AutonomyMode.DEGRADE: "yellow",
+            AutonomyMode.REFUSE: "red",
+        }.get(p.autonomy_mode, "white")
+        console.print(f"  [bold]Mode:[/bold] [{color}]{p.autonomy_mode.value}[/{color}]")
+        for r in p.reasons:
+            console.print(f"    - {r}")
+        for w in p.warnings:
+            console.print(f"    [dim]warning: {w}[/dim]")
 
     def _print_plan(self) -> None:
         plan = self.state.plan

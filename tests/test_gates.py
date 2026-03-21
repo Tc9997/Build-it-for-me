@@ -16,6 +16,9 @@ from build_loop.agents.architect import (
     ModuleRejectedError,
 )
 from build_loop.agents.executor import ExecutorAgent
+from build_loop.contract import BuildContract
+from build_loop.environment import EnvironmentSnapshot
+from build_loop.policy import AutonomyMode, PolicyDecision
 from build_loop.schemas import (
     BuildArtifact,
     BuildPlan,
@@ -95,36 +98,50 @@ class TestIntegrationGate:
     def test_integration_failure_stops_pipeline(self):
         agent = ArchitectAgent(output_dir="/tmp/test-build-loop-integ")
 
-        # Stub all phases up to integration
+        # Stub research
         agent.researcher.run = MagicMock(return_value=ResearchReport(
             feasibility="test", recommended_stack=["python"],
         ))
-        agent.planner.run = MagicMock(return_value=BuildPlan(
-            project_name="test", description="test", tech_stack=["python"],
-            modules=[], build_order=[],
+
+        # Stub contract / environment / policy
+        agent.spec_compiler.run = MagicMock(return_value=BuildContract(
+            project_name="test", summary="test",
+            goals=["test"], acceptance_criteria=["test"],
         ))
+        # Patch capture_snapshot to avoid real OS inspection
+        with patch("build_loop.agents.architect.capture_snapshot") as mock_snap:
+            mock_snap.return_value = EnvironmentSnapshot(
+                os_name="Test", arch="x86_64",
+                python_version="3.12", python_path="/usr/bin/python3",
+                output_dir_writable=True,
+            )
 
-        # Return a failed integration
-        agent.integrator.run = MagicMock(return_value=IntegrationResult(
-            modules_integrated=[],
-            success=False,
-            issues=["circular dependency between A and B"],
-        ))
+            agent.planner.run = MagicMock(return_value=BuildPlan(
+                project_name="test", description="test", tech_stack=["python"],
+                modules=[], build_order=[],
+            ))
 
-        # These should never be called
-        agent._write_project = MagicMock()
-        agent._setup_environment = MagicMock()
-        agent._test_and_debug_loop = MagicMock()
-        agent._optimize = MagicMock()
-        agent._acceptance_check = MagicMock()
+            # Return a failed integration
+            agent.integrator.run = MagicMock(return_value=IntegrationResult(
+                modules_integrated=[],
+                success=False,
+                issues=["circular dependency between A and B"],
+            ))
 
-        agent.run("test idea")
+            # These should never be called
+            agent._write_project = MagicMock()
+            agent._setup_environment = MagicMock()
+            agent._test_and_debug_loop = MagicMock()
+            agent._optimize = MagicMock()
+            agent._acceptance_check = MagicMock()
 
-        agent._write_project.assert_not_called()
-        agent._setup_environment.assert_not_called()
-        agent._test_and_debug_loop.assert_not_called()
-        agent._optimize.assert_not_called()
-        agent._acceptance_check.assert_not_called()
+            agent.run("test idea")
+
+            agent._write_project.assert_not_called()
+            agent._setup_environment.assert_not_called()
+            agent._test_and_debug_loop.assert_not_called()
+            agent._optimize.assert_not_called()
+            agent._acceptance_check.assert_not_called()
 
 
 # =========================================================================

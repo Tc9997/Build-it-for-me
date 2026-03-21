@@ -208,7 +208,12 @@ class AcceptanceResult(BaseModel):
 
 class BuildState(BaseModel):
     """The full state of a build loop run. Persisted to disk."""
+    schema_version: str = "1"
     idea: str = ""
+    # Steps 1-3: contract, environment, policy
+    contract: dict | None = Field(default=None, description="Serialized BuildContract")
+    environment: dict | None = Field(default=None, description="Serialized EnvironmentSnapshot")
+    policy: dict | None = Field(default=None, description="Serialized PolicyDecision")
     research: ResearchReport | None = None
     plan: BuildPlan | None = None
     artifacts: dict[str, BuildArtifact] = Field(default_factory=dict)
