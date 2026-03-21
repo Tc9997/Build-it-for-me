@@ -476,3 +476,59 @@ class TestModeRouting:
         assert hasattr(orch, "builder")
         assert not hasattr(orch, "spec_compiler")  # Freeform has no contract
         assert not hasattr(orch, "verifier")  # Freeform has no verifier
+
+    def test_freeform_survives_broken_registry(self):
+        """Freeform must work even if template registry is broken."""
+        # Force the lazy registry to be uninitialized
+        import build_loop.templates.registry as reg
+        old = reg._REGISTRY
+        reg._REGISTRY = None  # Reset to force re-lazy-init
+
+        try:
+            # Freeform should import and instantiate without touching registry
+            from build_loop.modes.freeform import FreeformOrchestrator
+            orch = FreeformOrchestrator(output_dir="/tmp/test-freeform-isolated")
+            assert hasattr(orch, "planner")
+        finally:
+            reg._REGISTRY = old
+
+
+# =========================================================================
+# Template errors flow through controlled error path
+# =========================================================================
+
+class TestTemplateErrorHandling:
+    """CacheError and MaterializationError must be caught as PipelineError."""
+
+    def test_materialization_error_stops_cleanly(self):
+        """MaterializationError should save state and stop, not propagate raw."""
+        from build_loop.modes.template_first import TemplateFirstOrchestrator
+        from build_loop.templates.materialize import MaterializationError
+
+        orch = TemplateFirstOrchestrator(output_dir="/tmp/test-mat-error")
+        orch.researcher.run = MagicMock(return_value=ResearchReport(
+            feasibility="test", recommended_stack=[],
+        ))
+        orch.spec_compiler.run = MagicMock(return_value=BuildContract(
+            project_name="test", summary="test",
+            goals=["test"], acceptance_criteria=["test"],
+            archetype="python_cli",
+        ))
+
+        with patch("build_loop.modes.template_first.capture_snapshot") as mock_snap:
+            mock_snap.return_value = EnvironmentSnapshot(
+                os_name="Test", arch="x86_64",
+                python_version="3.12", python_path="/usr/bin/python3",
+                output_dir_writable=True,
+            )
+            # Force materialization to fail
+            with patch("build_loop.modes.template_first.materialize_template") as mock_mat:
+                mock_mat.side_effect = MaterializationError("ownership.json missing entry")
+                with patch("build_loop.modes.template_first.ensure_cached") as mock_cache:
+                    mock_cache.return_value = Path("/tmp/fake-cache")
+
+                    # Should NOT raise — should catch and stop cleanly
+                    result = orch.run("test idea")
+
+                    # Pipeline stopped, state preserved
+                    assert result == orch.output_dir

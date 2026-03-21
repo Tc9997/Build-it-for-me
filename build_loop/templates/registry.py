@@ -94,7 +94,15 @@ def _build_registry() -> dict[Archetype, RegistryEntry]:
     return entries
 
 
-_REGISTRY = _build_registry()
+_REGISTRY: dict[Archetype, RegistryEntry] | None = None
+
+
+def _get_registry() -> dict[Archetype, RegistryEntry]:
+    """Lazy initialization — registry is built on first access, not at import."""
+    global _REGISTRY
+    if _REGISTRY is None:
+        _REGISTRY = _build_registry()
+    return _REGISTRY
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +123,7 @@ def resolve(archetype: str | Archetype) -> RegistryEntry:
                 f"Supported: {[a.value for a in Archetype]}"
             )
 
-    entry = _REGISTRY.get(archetype)
+    entry = _get_registry().get(archetype)
     if entry is None:
         raise RegistryError(f"No template registered for archetype: {archetype.value}")
 
@@ -132,7 +140,7 @@ def verify_commit(entry: RegistryEntry) -> bool:
 
 
 def list_archetypes() -> list[str]:
-    return [a.value for a in _REGISTRY.keys()]
+    return [a.value for a in _get_registry().keys()]
 
 
 # ---------------------------------------------------------------------------

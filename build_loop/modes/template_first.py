@@ -58,8 +58,8 @@ from build_loop.schemas import (
     PolicyState,
 )
 from build_loop.templates import registry as template_registry
-from build_loop.templates.cache import ensure_cached
-from build_loop.templates.materialize import materialize as materialize_template
+from build_loop.templates.cache import CacheError, ensure_cached
+from build_loop.templates.materialize import MaterializationError, materialize as materialize_template
 from build_loop.templates.models import OwnershipManifest
 from build_loop.templates.ownership import OwnershipViolationError, check_write_allowed
 from build_loop.templates.registry import RegistryError
@@ -239,31 +239,39 @@ class TemplateFirstOrchestrator:
     # ------------------------------------------------------------------
 
     def _resolve_and_materialize_template(self) -> None:
+        """Resolve, cache, and materialize the template.
+
+        All errors (RegistryError, CacheError, MaterializationError) are
+        converted to PipelineError so they flow through the normal
+        controlled error path with state preservation.
+
+        The registry already verified the fixture against pinned hashes
+        at initialization. The cache verifies content hash on populate.
+        No redundant live verify_commit here.
+        """
         if not self.contract:
             raise PipelineError("No contract")
 
         try:
             entry = template_registry.resolve(self.contract.archetype)
+            cached = ensure_cached(entry)
+            contract_hash = self.contract.canonical_hash()
+            self._ownership_manifest = materialize_template(
+                cached_template=cached,
+                output_dir=Path(self.output_dir),
+                project_name=self.contract.project_name,
+                summary=self.contract.summary,
+                template_id=entry.template_id,
+                pinned_commit=entry.pinned_commit,
+                contract_hash=contract_hash,
+            )
+            log("template", f"{len(self._ownership_manifest.files)} files materialized")
         except RegistryError as e:
             raise PipelineError(f"Template resolution failed: {e}")
-
-        if not template_registry.verify_commit(entry):
-            raise PipelineError(
-                f"Template integrity check failed for {entry.template_id}"
-            )
-
-        cached = ensure_cached(entry)
-        contract_hash = self.contract.canonical_hash()
-        self._ownership_manifest = materialize_template(
-            cached_template=cached,
-            output_dir=Path(self.output_dir),
-            project_name=self.contract.project_name,
-            summary=self.contract.summary,
-            template_id=entry.template_id,
-            pinned_commit=entry.pinned_commit,
-            contract_hash=contract_hash,
-        )
-        log("template", f"{len(self._ownership_manifest.files)} files materialized")
+        except CacheError as e:
+            raise PipelineError(f"Template cache failed: {e}")
+        except MaterializationError as e:
+            raise PipelineError(f"Template materialization failed: {e}")
 
     # ------------------------------------------------------------------
     # Plan (contract-driven, template-aware)

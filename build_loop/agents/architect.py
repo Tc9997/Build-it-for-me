@@ -4,18 +4,13 @@ Two modes:
   template_first: Productized, narrow. python_cli and fastapi_service only.
   freeform: Experimental, broad. Any project type, best-effort.
 
-The architect selects the mode and delegates. It does not contain
-orchestration logic itself — that lives in build_loop/modes/.
-
-For backward compatibility, ArchitectAgent.run() defaults to template_first.
-Use run_freeform() for the experimental generalist loop.
+Imports are lazy: template_first is only imported when that mode is selected.
+A broken template registry does not prevent freeform from loading.
 """
 
 from __future__ import annotations
 
 from build_loop.modes import BuildMode
-from build_loop.modes.template_first import TemplateFirstOrchestrator
-from build_loop.modes.freeform import FreeformOrchestrator
 
 # Re-export exceptions so existing test imports still work
 from build_loop.common.pipeline import (  # noqa: F401
@@ -30,6 +25,10 @@ class ArchitectAgent:
 
     template_first is the default for supported archetypes.
     freeform is explicit-only and labeled experimental.
+
+    Mode-specific modules are imported lazily so a template registry
+    failure (e.g. missing fixtures, drifted pins) does not break
+    freeform mode.
     """
 
     def __init__(
@@ -42,20 +41,22 @@ class ArchitectAgent:
         self.output_dir = output_dir
         self._confirm = confirm_callback
 
-        # Create the appropriate orchestrator
+        # Lazy import: only load the selected mode's module
         if mode == BuildMode.TEMPLATE_FIRST:
+            from build_loop.modes.template_first import TemplateFirstOrchestrator
             self._orchestrator = TemplateFirstOrchestrator(
                 output_dir=output_dir,
                 confirm_callback=confirm_callback,
             )
         elif mode == BuildMode.FREEFORM:
+            from build_loop.modes.freeform import FreeformOrchestrator
             self._orchestrator = FreeformOrchestrator(
                 output_dir=output_dir,
             )
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
-        # Expose state and sub-agents for test compatibility
+        # Expose state for test compatibility
         self.state = self._orchestrator.state
 
     @property
@@ -73,11 +74,9 @@ class ArchitectAgent:
     def run(self, idea: str) -> str:
         """Run the build pipeline in the configured mode."""
         result = self._orchestrator.run(idea)
-        # Keep state reference fresh after run
         self.state = self._orchestrator.state
         return result
 
-    # Convenience access to sub-agents for testing
     def __getattr__(self, name):
         """Delegate attribute access to the orchestrator for backward compat."""
         return getattr(self._orchestrator, name)
