@@ -1,0 +1,356 @@
+"""Tests for build analysis: export extraction, framework hints,
+pre-integration validation, and syntax screening."""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock
+
+import pytest
+
+from build_loop.analysis.exports import ModuleExports, analyze_artifact
+from build_loop.analysis.contract_validation import validate_pre_integration
+from build_loop.analysis.framework_hints import get_framework_hints
+from build_loop.common.pipeline import _screen_syntax, _gather_dependency_exports
+from build_loop.schemas import (
+    BuildArtifact,
+    BuildPlan,
+    BuildState,
+    ModuleSpec,
+    TaskSize,
+)
+
+
+# =========================================================================
+# Export analysis
+# =========================================================================
+
+class TestExportAnalyzer:
+    """AST-based export extraction from built module code."""
+
+    def test_extracts_classes(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"mod_a.py": "class MyModel:\n    pass\n\nclass OtherModel:\n    pass\n"},
+        )
+        exports = analyze_artifact(artifact)
+        assert "MyModel" in exports.exported_classes
+        assert "OtherModel" in exports.exported_classes
+        assert exports.syntax_valid
+
+    def test_extracts_functions(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"mod_a.py": "def process():\n    pass\n\nasync def fetch():\n    pass\n"},
+        )
+        exports = analyze_artifact(artifact)
+        assert "process" in exports.exported_functions
+        assert "fetch" in exports.exported_functions
+
+    def test_extracts_constants(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"mod_a.py": "VERSION = '1.0'\nMAX_RETRIES = 3\n"},
+        )
+        exports = analyze_artifact(artifact)
+        assert "VERSION" in exports.exported_constants
+        assert "MAX_RETRIES" in exports.exported_constants
+
+    def test_extracts_imports(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"mod_a.py": "from pydantic import BaseModel, Field\nimport json\n"},
+        )
+        exports = analyze_artifact(artifact)
+        assert "from pydantic import BaseModel, Field" in exports.import_statements
+        assert "import json" in exports.import_statements
+
+    def test_detects_syntax_errors(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"mod_a.py": "def broken(\n"},
+        )
+        exports = analyze_artifact(artifact)
+        assert not exports.syntax_valid
+        assert len(exports.parse_errors) > 0
+
+    def test_records_all_files(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"mod_a.py": "pass", "README.md": "# Hi"},
+            tests={"tests/test_a.py": "pass"},
+        )
+        exports = analyze_artifact(artifact)
+        assert "mod_a.py" in exports.files
+        assert "README.md" in exports.files
+        assert "tests/test_a.py" in exports.files
+
+    def test_skips_non_python_files(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"data.json": '{"key": "value"}'},
+        )
+        exports = analyze_artifact(artifact)
+        assert exports.syntax_valid  # No Python to parse
+        assert exports.exported_classes == []
+
+    def test_analyzes_test_files_too(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"mod_a.py": "class Foo: pass"},
+            tests={"tests/test_a.py": "def test_foo(): pass"},
+        )
+        exports = analyze_artifact(artifact)
+        assert "Foo" in exports.exported_classes
+        assert "test_foo" in exports.exported_functions
+
+
+# =========================================================================
+# Framework hints
+# =========================================================================
+
+class TestFrameworkHints:
+    """Static framework guidance blocks."""
+
+    def test_pydantic_hints_present(self):
+        hints = get_framework_hints(["pydantic>=2.0"])
+        assert "field_validator" in hints
+        assert "model_dump" in hints
+        assert "@validator" in hints  # mentioned as "do NOT use"
+
+    def test_fastapi_hints_present(self):
+        hints = get_framework_hints(["fastapi>=0.110"])
+        assert "APIRouter" in hints
+
+    def test_no_hints_for_unknown_stack(self):
+        hints = get_framework_hints(["some-unknown-lib"])
+        assert hints == ""
+
+    def test_multiple_frameworks(self):
+        hints = get_framework_hints(["pydantic>=2.0", "fastapi>=0.110"])
+        assert "field_validator" in hints
+        assert "APIRouter" in hints
+
+    def test_case_insensitive(self):
+        hints = get_framework_hints(["Pydantic>=2.0"])
+        assert "field_validator" in hints
+
+
+# =========================================================================
+# Syntax screening
+# =========================================================================
+
+class TestSyntaxScreening:
+    """Syntax check before LLM review."""
+
+    def test_clean_code_passes(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"mod_a.py": "class Foo:\n    pass\n"},
+        )
+        issues = _screen_syntax(artifact)
+        assert issues == []
+
+    def test_broken_code_caught(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"mod_a.py": "def broken(\n"},
+        )
+        issues = _screen_syntax(artifact)
+        assert len(issues) > 0
+        assert "syntax" in issues[0].lower() or "Syntax" in issues[0]
+
+
+# =========================================================================
+# Dependency context gathering
+# =========================================================================
+
+class TestDependencyContext:
+    """Downstream modules receive actual built dependency context."""
+
+    def test_gathers_from_earlier_batches(self):
+        module = ModuleSpec(
+            id="mod_b", name="B", description="test", size=TaskSize.SMALL,
+            dependencies=["mod_a"],
+        )
+        module_specs = {
+            "mod_a": ModuleSpec(id="mod_a", name="A", description="test", size=TaskSize.SMALL),
+            "mod_b": module,
+        }
+        all_exports = {
+            "mod_a": ModuleExports(
+                module_id="mod_a",
+                files=["mod_a.py"],
+                exported_classes=["BaseModel"],
+            ),
+        }
+        result = _gather_dependency_exports(module, module_specs, all_exports)
+        assert "mod_a" in result
+        assert "BaseModel" in result["mod_a"].exported_classes
+
+    def test_ignores_unbuilt_dependencies(self):
+        module = ModuleSpec(
+            id="mod_b", name="B", description="test", size=TaskSize.SMALL,
+            dependencies=["mod_a", "mod_c"],
+        )
+        module_specs = {"mod_b": module}
+        all_exports = {
+            "mod_a": ModuleExports(module_id="mod_a", files=["a.py"]),
+            # mod_c not built yet
+        }
+        result = _gather_dependency_exports(module, module_specs, all_exports)
+        assert "mod_a" in result
+        assert "mod_c" not in result
+
+    def test_no_dependencies_returns_empty(self):
+        module = ModuleSpec(
+            id="mod_a", name="A", description="test", size=TaskSize.SMALL,
+            dependencies=[],
+        )
+        result = _gather_dependency_exports(module, {}, {})
+        assert result == {}
+
+
+# =========================================================================
+# Pre-integration contract validation
+# =========================================================================
+
+class TestPreIntegrationValidation:
+    """Validates built modules against planned contracts before integration."""
+
+    def test_valid_modules_pass(self):
+        plan = BuildPlan(
+            project_name="test", description="test", tech_stack=["python"],
+            modules=[
+                ModuleSpec(id="mod_a", name="A", description="test", size=TaskSize.SMALL,
+                           file_paths=["mod_a.py"]),
+            ],
+            build_order=[["mod_a"]],
+        )
+        exports = {
+            "mod_a": ModuleExports(
+                module_id="mod_a", files=["mod_a.py"],
+                exported_classes=["Foo"], syntax_valid=True,
+            ),
+        }
+        result = validate_pre_integration(plan, exports)
+        assert result.valid
+
+    def test_syntax_errors_block(self):
+        plan = BuildPlan(
+            project_name="test", description="test", tech_stack=["python"],
+            modules=[ModuleSpec(id="mod_a", name="A", description="test", size=TaskSize.SMALL)],
+            build_order=[["mod_a"]],
+        )
+        exports = {
+            "mod_a": ModuleExports(
+                module_id="mod_a", syntax_valid=False,
+                parse_errors=["mod_a.py: invalid syntax"],
+            ),
+        }
+        result = validate_pre_integration(plan, exports)
+        assert not result.valid
+        assert any("syntax" in e.lower() for e in result.errors)
+
+    def test_missing_planned_file_warns(self):
+        plan = BuildPlan(
+            project_name="test", description="test", tech_stack=["python"],
+            modules=[
+                ModuleSpec(id="mod_a", name="A", description="test", size=TaskSize.SMALL,
+                           file_paths=["mod_a.py", "mod_a_utils.py"]),
+            ],
+            build_order=[["mod_a"]],
+        )
+        exports = {
+            "mod_a": ModuleExports(
+                module_id="mod_a", files=["mod_a.py"],  # Missing mod_a_utils.py
+                syntax_valid=True,
+            ),
+        }
+        result = validate_pre_integration(plan, exports)
+        # Warning, not error
+        assert any("mod_a_utils.py" in w for w in result.warnings)
+
+    def test_unbuilt_dependency_warns(self):
+        plan = BuildPlan(
+            project_name="test", description="test", tech_stack=["python"],
+            modules=[
+                ModuleSpec(id="mod_a", name="A", description="test", size=TaskSize.SMALL),
+                ModuleSpec(id="mod_b", name="B", description="test", size=TaskSize.SMALL,
+                           dependencies=["mod_a"]),
+            ],
+            build_order=[["mod_a"], ["mod_b"]],
+        )
+        exports = {
+            # mod_a not built (failed)
+            "mod_b": ModuleExports(module_id="mod_b", syntax_valid=True),
+        }
+        result = validate_pre_integration(plan, exports)
+        assert any("mod_a" in w and "not built" in w for w in result.warnings)
+
+
+# =========================================================================
+# Builder receives dependency exports
+# =========================================================================
+
+class TestBuilderDependencyContext:
+    """Builder prompt includes actual dependency exports."""
+
+    def test_builder_accepts_dependency_exports(self):
+        """BuilderAgent.run() signature accepts dependency_exports."""
+        from build_loop.agents.builder import BuilderAgent
+        agent = BuilderAgent()
+
+        # Mock the LLM call
+        agent.call_json = MagicMock(return_value={
+            "module_id": "mod_b",
+            "files": {"mod_b.py": "from mod_a import Foo"},
+            "tests": {},
+            "notes": "",
+        })
+
+        module = ModuleSpec(
+            id="mod_b", name="B", description="test", size=TaskSize.SMALL,
+            dependencies=["mod_a"],
+        )
+        plan = BuildPlan(
+            project_name="test", description="test",
+            tech_stack=["pydantic>=2.0"],
+        )
+        dep_exports = {
+            "mod_a": ModuleExports(
+                module_id="mod_a", files=["mod_a.py"],
+                exported_classes=["Foo", "Bar"],
+            ),
+        }
+
+        artifact = agent.run(module, plan, dependency_exports=dep_exports)
+        assert artifact.module_id == "mod_b"
+
+        # Verify the prompt included dependency context
+        call_args = agent.call_json.call_args
+        prompt = call_args[0][0]
+        assert "DEPENDENCY CONTEXT" in prompt
+        assert "Foo" in prompt
+        assert "Bar" in prompt
+
+    def test_builder_includes_framework_hints(self):
+        """Builder prompt includes Pydantic v2 hints when in tech stack."""
+        from build_loop.agents.builder import BuilderAgent
+        agent = BuilderAgent()
+        agent.call_json = MagicMock(return_value={
+            "module_id": "mod_a",
+            "files": {"mod_a.py": "pass"},
+            "tests": {},
+            "notes": "",
+        })
+
+        module = ModuleSpec(id="mod_a", name="A", description="test", size=TaskSize.SMALL)
+        plan = BuildPlan(
+            project_name="test", description="test",
+            tech_stack=["pydantic>=2.0", "fastapi"],
+        )
+
+        agent.run(module, plan)
+        prompt = agent.call_json.call_args[0][0]
+        assert "field_validator" in prompt
+        assert "model_dump" in prompt

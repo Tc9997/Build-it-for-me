@@ -21,6 +21,8 @@ from build_loop.agents.integrator import IntegratorAgent
 from build_loop.agents.executor import ExecutorAgent
 from build_loop.agents.debugger import DebuggerAgent
 from build_loop.agents.optimizer import OptimizerAgent
+from build_loop.analysis.exports import ModuleExports, analyze_artifact
+from build_loop.analysis.contract_validation import validate_pre_integration
 from build_loop.safety import safe_output_path
 from build_loop.schemas import (
     AcceptanceVerdict,
@@ -73,10 +75,22 @@ def build_all(
     builder: BuilderAgent,
     reviewer: ReviewerAgent,
 ) -> None:
-    """Build all modules batch by batch with parallel execution within batches."""
+    """Build all modules batch by batch with parallel execution within batches.
+
+    After each approved module:
+      - Runs deterministic export analysis (AST-based)
+      - Stores export metadata in state
+    Downstream batches receive actual dependency exports as builder context.
+
+    After all batches: runs pre-integration contract validation.
+    """
     plan = state.plan
     if not plan:
         raise PipelineError("No plan")
+
+    module_specs = {m.id: m for m in plan.modules}
+    # Accumulates exports as modules are approved
+    all_exports: dict[str, ModuleExports] = {}
 
     for batch_idx, batch in enumerate(plan.build_order):
         console.print(f"\n[bold green]  Batch {batch_idx + 1}/{len(plan.build_order)}:[/bold green] {batch}")
@@ -85,7 +99,10 @@ def build_all(
 
         with ThreadPoolExecutor(max_workers=max(len(modules), 1)) as pool:
             futures = {
-                pool.submit(build_and_review, mod, plan, state, builder, reviewer): mod.id
+                pool.submit(
+                    build_and_review, mod, plan, state, builder, reviewer,
+                    _gather_dependency_exports(mod, module_specs, all_exports),
+                ): mod.id
                 for mod in modules.values()
             }
             for future in as_completed(futures):
@@ -94,6 +111,15 @@ def build_all(
                     artifact, final_review = future.result()
                     state.artifacts[mid] = artifact
                     modules[mid].status = TaskStatus.APPROVED
+
+                    # Deterministic export analysis on approved artifact
+                    exports = analyze_artifact(artifact)
+                    all_exports[mid] = exports
+                    state.module_exports[mid] = exports.model_dump()
+                    log("analysis", f"{mid}: {len(exports.exported_classes)} classes, "
+                        f"{len(exports.exported_functions)} functions"
+                        + (" [syntax errors]" if not exports.syntax_valid else ""))
+
                 except ModuleRejectedError as e:
                     console.print(f"  [bold red]{mid} REJECTED: {e.final_review.issues}[/bold red]")
                     modules[mid].status = TaskStatus.FAILED
@@ -112,6 +138,36 @@ def build_all(
             f"{[m.id for m in failed]}[/yellow]"
         )
 
+    # Pre-integration contract validation (deterministic)
+    console.print("\n  [bold]Pre-integration validation...[/bold]")
+    pre_result = validate_pre_integration(plan, all_exports)
+    for w in pre_result.warnings:
+        console.print(f"  [dim]Warning: {w}[/dim]")
+    if not pre_result.valid:
+        for e in pre_result.errors:
+            console.print(f"  [bold red]Error: {e}[/bold red]")
+        raise PipelineError(
+            f"Pre-integration validation failed: {pre_result.errors}"
+        )
+    console.print("  [green]Pre-integration checks passed[/green]")
+
+
+def _gather_dependency_exports(
+    module: ModuleSpec,
+    module_specs: dict[str, ModuleSpec],
+    all_exports: dict[str, ModuleExports],
+) -> dict[str, ModuleExports]:
+    """Gather export metadata for a module's direct dependencies.
+
+    Only includes dependencies that have already been built and analyzed
+    (from earlier batches). Same-batch dependencies won't be here.
+    """
+    dep_exports = {}
+    for dep_id in module.dependencies:
+        if dep_id in all_exports:
+            dep_exports[dep_id] = all_exports[dep_id]
+    return dep_exports
+
 
 def build_and_review(
     module: ModuleSpec,
@@ -119,13 +175,42 @@ def build_and_review(
     state: BuildState,
     builder: BuilderAgent,
     reviewer: ReviewerAgent,
+    dependency_exports: dict[str, ModuleExports] | None = None,
 ) -> tuple[BuildArtifact, ReviewResult]:
-    """Build → review → revise loop. Raises ModuleRejectedError after max revisions."""
+    """Build → syntax screen → review → revise loop.
+
+    Before LLM review, runs deterministic syntax check on builder output.
+    If syntax is broken, feeds that as revision feedback without wasting
+    a reviewer round.
+    """
     module.status = TaskStatus.IN_PROGRESS
-    artifact = builder.run(module, plan)
+    artifact = builder.run(
+        module, plan,
+        dependency_exports=dependency_exports or {},
+    )
     last_review = None
 
     for attempt in range(MAX_REVIEW_REVISIONS):
+        # Deterministic syntax screening before LLM review
+        syntax_issues = _screen_syntax(artifact)
+        if syntax_issues:
+            log("pipeline", f"{module.id}: syntax issues found, requesting revision")
+            module.status = TaskStatus.REVISION
+            # Feed syntax errors as revision feedback without LLM review
+            syntax_feedback = ReviewResult(
+                module_id=module.id,
+                verdict=ReviewVerdict.REVISE,
+                issues=syntax_issues,
+                notes="Deterministic syntax check failed — fix before review",
+            )
+            state.reviews.setdefault(module.id, []).append(syntax_feedback)
+            artifact = builder.run(
+                module, plan,
+                revision_feedback=syntax_feedback,
+                dependency_exports=dependency_exports or {},
+            )
+            continue
+
         module.status = TaskStatus.IN_REVIEW
         review = reviewer.run(module, artifact, plan)
         state.reviews.setdefault(module.id, []).append(review)
@@ -136,9 +221,24 @@ def build_and_review(
 
         log("pipeline", f"{module.id}: revision {attempt + 1}/{MAX_REVIEW_REVISIONS}")
         module.status = TaskStatus.REVISION
-        artifact = builder.run(module, plan, revision_feedback=review)
+        artifact = builder.run(
+            module, plan,
+            revision_feedback=review,
+            dependency_exports=dependency_exports or {},
+        )
 
     raise ModuleRejectedError(module.id, last_review)
+
+
+def _screen_syntax(artifact: BuildArtifact) -> list[str]:
+    """Cheap deterministic syntax check on builder output.
+
+    Returns a list of syntax error descriptions, or empty if clean.
+    """
+    exports = analyze_artifact(artifact)
+    if not exports.syntax_valid:
+        return [f"Syntax error: {e}" for e in exports.parse_errors]
+    return []
 
 
 def write_project(

@@ -137,12 +137,27 @@ class ResearcherAgent(Agent):
         self.log("reading repos and docs...")
         deep_content = self._deep_read(triage)
 
-        # Step 5: Synthesize everything
+        # Step 5: Synthesize everything (truncate to fit context window)
         self.log("synthesizing research report...")
+        search_json = json.dumps(search_results, indent=2)
+        content_json = json.dumps(deep_content, indent=2)
+
+        # Rough token estimate: ~4 chars per token. Keep under 150k tokens.
+        max_chars = 500_000
+        total = len(idea) + len(search_json) + len(content_json)
+        if total > max_chars:
+            # Truncate deep content first (largest), then search results
+            budget = max_chars - len(idea) - 1000  # leave room for framing
+            search_budget = min(len(search_json), budget // 3)
+            content_budget = budget - search_budget
+            search_json = search_json[:search_budget] + "\n... (truncated)"
+            content_json = content_json[:content_budget] + "\n... (truncated)"
+            self.log(f"  truncated research context from {total} to ~{max_chars} chars")
+
         synthesis_prompt = (
             f"PROJECT IDEA:\n{idea}\n\n"
-            f"SEARCH RESULTS:\n{json.dumps(search_results, indent=2)}\n\n"
-            f"REPO & DOC CONTENTS:\n{json.dumps(deep_content, indent=2)}"
+            f"SEARCH RESULTS:\n{search_json}\n\n"
+            f"REPO & DOC CONTENTS:\n{content_json}"
         )
         data = self.call_json(synthesis_prompt)
 

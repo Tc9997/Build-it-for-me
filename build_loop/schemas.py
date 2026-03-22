@@ -283,8 +283,12 @@ class BuildState(BaseModel):
     research: ResearchReport | None = None
     plan: BuildPlan | None = None
 
-    # Build artifacts
+    # Build artifacts and analysis
     artifacts: dict[str, BuildArtifact] = Field(default_factory=dict)
+    module_exports: dict[str, dict] = Field(
+        default_factory=dict,
+        description="module_id -> ModuleExports.model_dump(). Populated after each approved module."
+    )
     reviews: dict[str, list[ReviewResult]] = Field(default_factory=dict)
     integration: IntegrationResult | None = None
     exec_history: list[ExecResult] = Field(default_factory=list)
