@@ -147,7 +147,10 @@ class TemplateFirstOrchestrator:
 
                 from build_loop.analysis.post_write import run_post_write_checks
                 archetype = self.contract.archetype if self.contract else ""
-                pw_result = run_post_write_checks(self.output_dir, archetype)
+                pw_result = run_post_write_checks(
+                    self.output_dir, archetype,
+                    export_metadata=self.state.module_exports or None,
+                )
                 for check in pw_result.checks:
                     console.print(f"  [green]{check}[/green]")
                 for err in pw_result.errors:
@@ -212,6 +215,14 @@ class TemplateFirstOrchestrator:
             phase("2", "CONTRACT", "Compiling build contract...")
             research_summary = _compact_research(self.state.research)
             self.contract = self.spec_compiler.run(idea, research_summary)
+
+            # Replace LLM-generated signals with deterministic derived ones
+            from build_loop.analysis.signal_derivation import derive_signals
+            derived = derive_signals(self.contract)
+            if derived:
+                self.contract.success_signals = derived
+                log("contract", f"  {len(derived)} signals derived from archetype")
+
             self.state.contract = ContractState(data=self.contract)
             save_state(self.state, self.output_dir)
 
@@ -284,7 +295,10 @@ class TemplateFirstOrchestrator:
             # Post-write checks (deterministic, no LLM)
             from build_loop.analysis.post_write import run_post_write_checks
             archetype = self.contract.archetype if self.contract else ""
-            pw_result = run_post_write_checks(self.output_dir, archetype)
+            pw_result = run_post_write_checks(
+                    self.output_dir, archetype,
+                    export_metadata=self.state.module_exports or None,
+                )
             for check in pw_result.checks:
                 console.print(f"  [green]{check}[/green]")
             for err in pw_result.errors:

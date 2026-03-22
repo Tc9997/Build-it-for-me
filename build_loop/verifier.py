@@ -69,6 +69,8 @@ class VerificationResult(BaseModel):
     tier1_results: list[SignalResult] = Field(default_factory=list)
     tier2_passed: bool = True
     tier2_results: list[SignalResult] = Field(default_factory=list)
+    tier3_passed: bool = True
+    tier3_results: list[SignalResult] = Field(default_factory=list)
     uncovered_behavioral: list[str] = Field(
         default_factory=list,
         description="Behavioral expectations not structurally executable"
@@ -80,14 +82,15 @@ class VerificationResult(BaseModel):
 
     @property
     def passed(self) -> bool:
-        return self.tier1_passed and self.tier2_passed
+        return self.tier1_passed and self.tier2_passed and self.tier3_passed
 
     @property
     def summary(self) -> str:
         t1 = sum(1 for r in self.tier1_results if r.passed)
         t2 = sum(1 for r in self.tier2_results if r.passed)
-        total_pass = t1 + t2
-        total = len(self.tier1_results) + len(self.tier2_results)
+        t3 = sum(1 for r in self.tier3_results if r.passed)
+        total_pass = t1 + t2 + t3
+        total = len(self.tier1_results) + len(self.tier2_results) + len(self.tier3_results)
         uncovered = len(self.uncovered_behavioral) + len(self.uncovered_invariants)
         return (
             f"{total_pass}/{total} checks passed"
@@ -170,6 +173,20 @@ class Verifier:
                 self._stop_service(service_proc)
 
         result.tier2_passed = all(r.passed for r in result.tier2_results)
+
+        # Tier 3: archetype-specific checks
+        from build_loop.analysis.archetype_checks import run_archetype_checks
+        self.log("Tier 3: archetype checks...")
+        tier3 = run_archetype_checks(str(self.project_dir), contract.archetype)
+        result.tier3_results = tier3
+        result.tier3_passed = all(r.passed for r in tier3)
+        for sr in tier3:
+            status = "[green]PASS[/green]" if sr.passed else "[red]FAIL[/red]"
+            self.log(f"  {status} [{sr.signal_type}] {sr.description}")
+            if not sr.passed and sr.detail:
+                self.log(f"    {sr.detail}")
+        t3_pass = sum(1 for r in tier3 if r.passed)
+        self.log(f"  Tier 3: {t3_pass}/{len(tier3)} passed")
 
         # Report uncovered items honestly
         for be in contract.behavioral_expectations:

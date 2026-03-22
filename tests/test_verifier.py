@@ -32,7 +32,7 @@ def _make_contract(**overrides) -> BuildContract:
     defaults = dict(
         project_name="test", summary="test",
         goals=["test"], acceptance_criteria=["test"],
-        archetype="python_cli",
+        archetype="unsupported",  # Use unsupported to skip tier 3 archetype checks in unit tests
     )
     defaults.update(overrides)
     return BuildContract(**defaults)

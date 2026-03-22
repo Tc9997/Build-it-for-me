@@ -25,6 +25,7 @@ class PostWriteResult:
 def run_post_write_checks(
     output_dir: str,
     archetype: str = "",
+    export_metadata: dict | None = None,
 ) -> PostWriteResult:
     """Run deterministic checks after project files are written.
 
@@ -62,7 +63,14 @@ def run_post_write_checks(
     elif archetype == "fastapi_service":
         _check_fastapi_service(out, result)
 
-    # 4. Package importable check (after pip install -e . in setup)
+    # 5. README code example validation
+    if export_metadata:
+        from build_loop.analysis.readme_validation import validate_readme
+        readme_errors = validate_readme(out, export_metadata)
+        for err in readme_errors:
+            result.errors.append(f"README: {err}")
+
+    # 6. Package importable check (after pip install -e . in setup)
     venv_python = out / ".venv" / "bin" / "python"
     if venv_python.exists():
         # Find the main package directory
