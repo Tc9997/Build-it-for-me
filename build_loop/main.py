@@ -50,7 +50,7 @@ Examples:
     )
     parser.add_argument(
         "--resume",
-        choices=["setup", "test", "verify", "accept"],
+        choices=["write", "setup", "test", "verify", "accept"],
         help="Resume from a phase using saved state (skips research/contract/plan/build)",
     )
     parser.add_argument(

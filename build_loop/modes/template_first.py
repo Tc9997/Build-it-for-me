@@ -115,6 +115,20 @@ class TemplateFirstOrchestrator:
             self.contract = self.state.contract.data
 
         try:
+            if from_phase == "write":
+                phase("9", "WRITE", "Re-writing project to disk...")
+                write_project(self.state, self.output_dir, self._safe_write)
+                save_state(self.state, self.output_dir)
+
+                from build_loop.analysis.post_write import run_post_write_checks
+                archetype = self.contract.archetype if self.contract else ""
+                pw_result = run_post_write_checks(self.output_dir, archetype)
+                for check in pw_result.checks:
+                    console.print(f"  [green]{check}[/green]")
+                for err in pw_result.errors:
+                    console.print(f"  [bold red]{err}[/bold red]")
+                from_phase = "setup"
+
             if from_phase == "setup":
                 phase("10", "SETUP", "Installing dependencies...")
                 setup_environment(self.state, self.executor, self._venv_cmd)
@@ -234,6 +248,17 @@ class TemplateFirstOrchestrator:
             phase("9", "WRITE", "Writing project to disk...")
             write_project(self.state, self.output_dir, self._safe_write)
             save_state(self.state, self.output_dir)
+
+            # Post-write checks (deterministic, no LLM)
+            from build_loop.analysis.post_write import run_post_write_checks
+            archetype = self.contract.archetype if self.contract else ""
+            pw_result = run_post_write_checks(self.output_dir, archetype)
+            for check in pw_result.checks:
+                console.print(f"  [green]{check}[/green]")
+            for err in pw_result.errors:
+                console.print(f"  [bold red]{err}[/bold red]")
+            if not pw_result.passed:
+                console.print("  [yellow]Post-write checks failed — proceeding but issues may persist[/yellow]")
 
             self._checkpoint_gate("setup")
 

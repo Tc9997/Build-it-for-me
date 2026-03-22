@@ -7,3 +7,10 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
 ]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+where = ["."]
