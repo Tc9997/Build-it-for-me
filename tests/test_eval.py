@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -271,5 +272,45 @@ class TestEvalVerify:
             result = run_task(task, BuildMode.TEMPLATE_FIRST, Path("/tmp/test-eval-empty"))
             assert not result.passed
             assert result.signal_results[0]["type"] == "none"
+        finally:
+            runner_mod.ArchitectAgent = old
+
+    def test_errored_run_cannot_pass(self, tmp_path):
+        """A run that crashes must be passed=False even if output files exist."""
+        from build_loop.eval.runner import run_task
+        from build_loop.modes import BuildMode
+        import build_loop.eval.runner as runner_mod
+
+        # Create a task with a file_exists signal
+        task = EvalTask(
+            id="crash", name="crash", archetype="python_cli", idea="test",
+            expected_signals=[
+                {"type": "file_exists", "description": "cli exists", "file_path": "src/cli.py"},
+            ],
+        )
+
+        # Mock agent that writes the expected file then crashes
+        mock_cls = MagicMock()
+        def fake_run(idea):
+            out = Path(tmp_path / "crash_template_first" / "src")
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "cli.py").write_text("pass")
+            raise RuntimeError("boom")
+        mock_agent = MagicMock()
+        mock_agent.run = fake_run
+        mock_agent.state = MagicMock()
+        mock_agent.state.debug_rounds = 0
+        mock_agent.state.acceptance = None
+        mock_agent.state.verification = None
+        mock_cls.return_value = mock_agent
+
+        old = runner_mod.ArchitectAgent
+        runner_mod.ArchitectAgent = mock_cls
+        try:
+            result = run_task(task, BuildMode.TEMPLATE_FIRST, tmp_path)
+            # Must be failed despite the file existing
+            assert not result.passed
+            assert result.error
+            assert result.signal_results[0]["type"] == "error"
         finally:
             runner_mod.ArchitectAgent = old

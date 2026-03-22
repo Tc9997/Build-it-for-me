@@ -76,12 +76,15 @@ def print_comparison(suites: list[EvalSuiteResult]) -> None:
         wins = {s0.mode: 0, s1.mode: 0, "tie": 0}
         for tid in common:
             r0, r1 = ids_0[tid], ids_1[tid]
+            # Errored runs are always non-pass — r.passed is guaranteed False
             if r0.passed and not r1.passed:
                 wins[s0.mode] += 1
-                console.print(f"  {tid}: {s0.mode} wins")
+                suffix = " (opponent errored)" if r1.error else ""
+                console.print(f"  {tid}: {s0.mode} wins{suffix}")
             elif r1.passed and not r0.passed:
                 wins[s1.mode] += 1
-                console.print(f"  {tid}: {s1.mode} wins")
+                suffix = " (opponent errored)" if r0.error else ""
+                console.print(f"  {tid}: {s1.mode} wins{suffix}")
             elif r0.passed and r1.passed:
                 wins["tie"] += 1
                 # Compare on wall time

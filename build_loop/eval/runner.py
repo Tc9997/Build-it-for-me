@@ -82,13 +82,14 @@ def run_task(task: EvalTask, mode: BuildMode, output_base: Path) -> EvalRunResul
     result.wall_time_seconds = round(time.monotonic() - start, 2)
 
     # ---------------------------------------------------------------
-    # SCORING: eval-owned verification against corpus expected_signals
-    # This is the authority for pass/fail — same for both modes.
-    # ---------------------------------------------------------------
     # SCORING: eval-owned verification against corpus expected_signals.
-    # Tasks without signals cannot pass — every corpus task must have
-    # at least one signal for the benchmark to be meaningful.
-    if task.expected_signals:
+    # Errored runs cannot pass — if the pipeline crashed, the task fails
+    # regardless of what files happen to exist in the output directory.
+    # ---------------------------------------------------------------
+    if result.error:
+        result.passed = False
+        result.signal_results = [{"type": "error", "description": "Pipeline errored", "passed": False, "detail": result.error}]
+    elif task.expected_signals:
         eval_signals = eval_verify(task, task_dir)
         result.signal_results = eval_signals
         result.passed = all(s["passed"] for s in eval_signals)
