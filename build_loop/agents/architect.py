@@ -1,16 +1,14 @@
 """Architect agent: thin router that delegates to mode-specific orchestrators.
 
-Two modes:
-  template_first: Productized, narrow. python_cli and fastapi_service only.
-  freeform: Experimental, broad. Any project type, best-effort.
-
-Imports are lazy: template_first is only imported when that mode is selected.
-A broken template registry does not prevent freeform from loading.
+Uses the engine/routing abstractions but preserves all existing behavior.
+Imports are still lazy — a broken template registry doesn't break freeform.
 """
 
 from __future__ import annotations
 
+from build_loop.engine import RouteDecision
 from build_loop.modes import BuildMode
+from build_loop.routing import route, is_success
 
 # Re-export exceptions so existing test imports still work
 from build_loop.common.pipeline import (  # noqa: F401
@@ -21,7 +19,7 @@ from build_loop.common.pipeline import (  # noqa: F401
 
 
 class ArchitectAgent:
-    """Routes to the appropriate build mode orchestrator.
+    """Routes to the appropriate build engine via RouteDecision.
 
     template_first is the default for supported archetypes.
     freeform is explicit-only and labeled experimental.
@@ -37,6 +35,7 @@ class ArchitectAgent:
         self.mode = mode
         self.output_dir = output_dir
         self._confirm = confirm_callback
+        self.decision: RouteDecision = route(mode)
 
         # Lazy import: only load the selected mode's module
         if mode == BuildMode.TEMPLATE_FIRST:
@@ -75,16 +74,20 @@ class ArchitectAgent:
         return result
 
     def resume(self, from_phase: str) -> str:
-        """Resume from a specific phase using saved state.
-
-        Supported phases: setup, test, verify, accept
-        Loads state from .build_state/state.json in the output directory.
-        """
+        """Resume from a specific phase using saved state."""
         if not hasattr(self._orchestrator, "resume"):
             raise PipelineError(f"Resume not supported in {self.mode.value} mode")
         result = self._orchestrator.resume(from_phase)
         self.state = self._orchestrator.state
         return result
+
+    def is_success(self) -> bool:
+        """Check if the run succeeded according to the route decision's promise level."""
+        if self.state.acceptance is None:
+            return False
+        v = self.state.acceptance.verdict
+        verdict = str(v.value if hasattr(v, "value") else v)
+        return is_success(self.decision, verdict)
 
     def __getattr__(self, name):
         """Delegate attribute access to the orchestrator for backward compat."""
