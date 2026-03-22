@@ -6,7 +6,7 @@ text, contract archetype, or environment capabilities to auto-route.
 
 from __future__ import annotations
 
-from build_loop.engine import EngineCapabilities, PromiseLevel, RouteDecision
+from build_loop.engine import EngineCapabilities, PromiseLevel, RouteDecision, RouteOrigin
 from build_loop.modes import BuildMode
 
 
@@ -30,25 +30,37 @@ FREEFORM_CAPABILITIES = EngineCapabilities(
 )
 
 
-def route(mode: BuildMode) -> RouteDecision:
+def route(mode: BuildMode, explicit: bool = False) -> RouteDecision:
     """Select an engine based on the requested build mode.
 
-    Returns a RouteDecision capturing the selection, confidence, and rationale.
+    Args:
+        mode: The build mode to use.
+        explicit: True if the user passed --mode explicitly. False means default.
     """
+    origin = RouteOrigin.EXPLICIT if explicit else RouteOrigin.DEFAULT
+
     if mode == BuildMode.TEMPLATE_FIRST:
         return RouteDecision(
             engine_name="template_first",
             promise_level=PromiseLevel.VERIFIED,
+            origin=origin,
             confidence=1.0,
-            rationale="User selected template_first (default). Verifier-backed, narrow scope.",
+            rationale=(
+                "Verifier-backed, narrow scope (python_cli, fastapi_service). "
+                "All gates enforced. Verifier is the authority."
+            ),
             mode_value=mode.value,
         )
     elif mode == BuildMode.FREEFORM:
         return RouteDecision(
             engine_name="freeform",
             promise_level=PromiseLevel.BEST_EFFORT,
+            origin=RouteOrigin.EXPLICIT,  # Freeform is always explicit
             confidence=1.0,
-            rationale="User explicitly selected freeform (experimental).",
+            rationale=(
+                "Experimental, broad scope. Iterative, best-effort, bounded. "
+                "LLM-judged acceptance. No verifier."
+            ),
             mode_value=mode.value,
         )
     else:

@@ -585,6 +585,190 @@ class TestDuplicateArtifactPaths:
         assert "mod_a.py" in written
         assert "mod_b.py" in written
 
+    def test_builder_producing_pyproject_toml_raises(self):
+        """Builders must not produce integrator-owned files."""
+        from build_loop.common.pipeline import write_project, PipelineError
+
+        state = BuildState()
+        state.artifacts = {
+            "mod_a": BuildArtifact(
+                module_id="mod_a",
+                files={"pyproject.toml": "[project]\nname = 'bad'"},
+            ),
+        }
+
+        with pytest.raises(PipelineError, match="integrator-owned"):
+            write_project(state, "/tmp/test-forbidden", lambda p, c: None)
+
+    def test_builder_producing_readme_raises(self):
+        from build_loop.common.pipeline import write_project, PipelineError
+
+        state = BuildState()
+        state.artifacts = {
+            "mod_a": BuildArtifact(
+                module_id="mod_a",
+                files={"README.md": "# Bad readme"},
+            ),
+        }
+
+        with pytest.raises(PipelineError, match="integrator-owned"):
+            write_project(state, "/tmp/test-forbidden-readme", lambda p, c: None)
+
+    def test_builder_producing_requirements_txt_raises(self):
+        from build_loop.common.pipeline import write_project, PipelineError
+
+        state = BuildState()
+        state.artifacts = {
+            "mod_a": BuildArtifact(
+                module_id="mod_a",
+                files={"requirements.txt": "pydantic>=2.0"},
+            ),
+        }
+
+        with pytest.raises(PipelineError, match="integrator-owned"):
+            write_project(state, "/tmp/test-forbidden-req", lambda p, c: None)
+
+    def test_integrator_overwriting_builder_file_raises(self):
+        """Integrator cannot overwrite a builder-owned module file."""
+        from build_loop.common.pipeline import write_project, PipelineError
+
+        state = BuildState()
+        state.artifacts = {
+            "mod_a": BuildArtifact(
+                module_id="mod_a",
+                files={"pkg/core.py": "# builder version"},
+            ),
+        }
+        state.integration = IntegrationResult(
+            modules_integrated=["mod_a"],
+            success=True,
+            wiring_files={"pkg/core.py": "# integrator version"},  # conflicts!
+        )
+
+        with pytest.raises(PipelineError, match="overwrite.*pkg/core.py"):
+            write_project(state, "/tmp/test-integ-overwrite", lambda p, c: None)
+
+    def test_integrator_shared_files_pass(self):
+        """Integrator producing pyproject.toml and README.md is allowed."""
+        from build_loop.common.pipeline import write_project
+
+        state = BuildState()
+        state.artifacts = {
+            "mod_a": BuildArtifact(
+                module_id="mod_a",
+                files={"pkg/core.py": "pass"},
+            ),
+        }
+        state.integration = IntegrationResult(
+            modules_integrated=["mod_a"],
+            success=True,
+            wiring_files={
+                "pyproject.toml": "[project]",
+                "README.md": "# Readme",
+                "requirements.txt": "pydantic",
+            },
+        )
+
+        written = []
+        write_project(state, "/tmp/test-integ-shared", lambda p, c: written.append(p))
+        assert "pyproject.toml" in written
+        assert "README.md" in written
+        assert "requirements.txt" in written
+        assert "pkg/core.py" in written
+
+    def test_integrator_new_wiring_file_passes(self):
+        """Integrator producing a new file that no builder owns is allowed."""
+        from build_loop.common.pipeline import write_project
+
+        state = BuildState()
+        state.artifacts = {
+            "mod_a": BuildArtifact(
+                module_id="mod_a",
+                files={"pkg/core.py": "pass"},
+            ),
+        }
+        state.integration = IntegrationResult(
+            modules_integrated=["mod_a"],
+            success=True,
+            wiring_files={"pkg/__main__.py": "from pkg.core import main; main()"},
+        )
+
+        written = []
+        write_project(state, "/tmp/test-integ-new", lambda p, c: written.append(p))
+        assert "pkg/__main__.py" in written
+
+
+    def test_interface_conflicting_with_builder_raises(self):
+        """A planner interface at the same path as a builder file must fail."""
+        from build_loop.common.pipeline import write_project, PipelineError
+        from build_loop.schemas import InterfaceContract
+
+        state = BuildState()
+        state.plan = BuildPlan(
+            project_name="test", description="test", tech_stack=["python"],
+            interfaces=[InterfaceContract(
+                name="core", description="core interface",
+                file_path="pkg/core.py", code="class Base: pass",
+            )],
+        )
+        state.artifacts = {
+            "mod_a": BuildArtifact(
+                module_id="mod_a",
+                files={"pkg/core.py": "# builder version"},  # conflicts with interface
+            ),
+        }
+
+        with pytest.raises(PipelineError, match="Duplicate file path.*pkg/core.py"):
+            write_project(state, "/tmp/test-iface-conflict", lambda p, c: None)
+
+    def test_interface_conflicting_with_integrator_raises(self):
+        """A planner interface at the same path as an integrator file must fail."""
+        from build_loop.common.pipeline import write_project, PipelineError
+        from build_loop.schemas import InterfaceContract
+
+        state = BuildState()
+        state.plan = BuildPlan(
+            project_name="test", description="test", tech_stack=["python"],
+            interfaces=[InterfaceContract(
+                name="main", description="entry",
+                file_path="main.py", code="def run(): pass",
+            )],
+        )
+        state.artifacts = {}
+        state.integration = IntegrationResult(
+            modules_integrated=[],
+            success=True,
+            wiring_files={"main.py": "# integrator version"},  # conflicts with interface
+        )
+
+        with pytest.raises(PipelineError, match="overwrite.*main.py"):
+            write_project(state, "/tmp/test-iface-integ", lambda p, c: None)
+
+    def test_interface_without_conflict_passes(self):
+        """Interface files with no conflicts should be written normally."""
+        from build_loop.common.pipeline import write_project
+        from build_loop.schemas import InterfaceContract
+
+        state = BuildState()
+        state.plan = BuildPlan(
+            project_name="test", description="test", tech_stack=["python"],
+            interfaces=[InterfaceContract(
+                name="types", description="shared types",
+                file_path="pkg/types.py", code="class MyType: pass",
+            )],
+        )
+        state.artifacts = {
+            "mod_a": BuildArtifact(
+                module_id="mod_a",
+                files={"pkg/impl.py": "from pkg.types import MyType"},
+            ),
+        }
+
+        written = []
+        write_project(state, "/tmp/test-iface-ok", lambda p, c: written.append(p))
+        assert "pkg/types.py" in written
+        assert "pkg/impl.py" in written
+
 
 class TestSetupFailureGate:
     """Failed setup commands must raise PipelineError."""

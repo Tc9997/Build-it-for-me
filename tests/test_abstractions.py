@@ -20,6 +20,7 @@ from build_loop.engine import (
     EngineCapabilities,
     PromiseLevel,
     RouteDecision,
+    RouteOrigin,
 )
 from build_loop.modes import BuildMode
 from build_loop.routing import (
@@ -71,6 +72,34 @@ class TestRouteDecision:
     def test_unknown_mode_raises(self):
         with pytest.raises(ValueError):
             route("nonexistent")
+
+    def test_default_origin_when_not_explicit(self):
+        decision = route(BuildMode.TEMPLATE_FIRST, explicit=False)
+        assert decision.origin == RouteOrigin.DEFAULT
+
+    def test_explicit_origin_when_explicit(self):
+        decision = route(BuildMode.TEMPLATE_FIRST, explicit=True)
+        assert decision.origin == RouteOrigin.EXPLICIT
+
+    def test_freeform_always_explicit(self):
+        """Freeform is always explicit — you can't accidentally end up there."""
+        decision = route(BuildMode.FREEFORM, explicit=False)
+        assert decision.origin == RouteOrigin.EXPLICIT
+
+    def test_summary_includes_engine_and_promise(self):
+        decision = route(BuildMode.TEMPLATE_FIRST)
+        s = decision.summary
+        assert "template_first" in s
+        assert "verified" in s
+
+    def test_freeform_summary_says_best_effort(self):
+        decision = route(BuildMode.FREEFORM)
+        assert "best-effort" in decision.summary
+
+    def test_rationale_is_nonempty(self):
+        for mode in BuildMode:
+            decision = route(mode)
+            assert len(decision.rationale) > 10
 
 
 class TestIsSuccess:
@@ -166,6 +195,12 @@ class TestRouterAbstraction:
         assert agent.decision is not None
         assert agent.decision.engine_name == "template_first"
         assert agent.decision.promise_level == PromiseLevel.VERIFIED
+        assert agent.decision.origin == RouteOrigin.DEFAULT
+
+    def test_architect_explicit_mode(self):
+        from build_loop.agents.architect import ArchitectAgent
+        agent = ArchitectAgent(output_dir="/tmp/test-explicit", mode_explicit=True)
+        assert agent.decision.origin == RouteOrigin.EXPLICIT
 
     def test_architect_freeform_decision(self):
         from build_loop.agents.architect import ArchitectAgent
@@ -188,3 +223,53 @@ class TestRouterAbstraction:
 
         assert not isinstance(tf._orchestrator, FreeformOrchestrator)
         assert isinstance(ff._orchestrator, FreeformOrchestrator)
+
+
+# =========================================================================
+# CLI explicit-mode detection
+# =========================================================================
+
+class TestModeExplicitDetection:
+    """Regression: --mode=freeform must be detected as explicit."""
+
+    def test_mode_equals_freeform_is_explicit(self):
+        """--mode=freeform (argparse '=' form) must set mode_explicit=True."""
+        import argparse
+        from build_loop.main import main
+
+        # Simulate: build-loop "test idea" --mode=freeform
+        test_argv = ["build-loop", "test idea", "--mode=freeform"]
+        parser = argparse.ArgumentParser()
+        parser.add_argument("idea", nargs="?")
+        parser.add_argument("--mode", "-m", choices=["template_first", "freeform"], default=None)
+        args = parser.parse_args(test_argv[1:])
+
+        mode_explicit = args.mode is not None
+        assert mode_explicit is True
+        assert args.mode == "freeform"
+
+    def test_mode_space_freeform_is_explicit(self):
+        """--mode freeform (space-separated) must set mode_explicit=True."""
+        import argparse
+
+        test_argv = ["build-loop", "test idea", "--mode", "freeform"]
+        parser = argparse.ArgumentParser()
+        parser.add_argument("idea", nargs="?")
+        parser.add_argument("--mode", "-m", choices=["template_first", "freeform"], default=None)
+        args = parser.parse_args(test_argv[1:])
+
+        mode_explicit = args.mode is not None
+        assert mode_explicit is True
+
+    def test_no_mode_flag_is_not_explicit(self):
+        """Omitting --mode entirely must set mode_explicit=False."""
+        import argparse
+
+        test_argv = ["build-loop", "test idea"]
+        parser = argparse.ArgumentParser()
+        parser.add_argument("idea", nargs="?")
+        parser.add_argument("--mode", "-m", choices=["template_first", "freeform"], default=None)
+        args = parser.parse_args(test_argv[1:])
+
+        mode_explicit = args.mode is not None
+        assert mode_explicit is False

@@ -34,9 +34,11 @@ Rules:
 - Import shared types from wherever the interface contract says they live.
 - When DEPENDENCY CONTEXT is provided, use the ACTUAL export names and file paths \
   from already-built dependencies — do NOT guess or invent symbol names.
-- Do NOT create or modify pyproject.toml, README.md, setup.py, or setup.cfg. \
-  Those are managed by the integrator, not by individual builders.
+- FORBIDDEN FILES: Do NOT create pyproject.toml, README.md, setup.py, setup.cfg, \
+  requirements.txt, Makefile, or Dockerfile. Those are integrator-owned shared files. \
+  If you include any of these, the build WILL fail with a deterministic error.
 - Do NOT create files under src/ — use the package name as the directory (e.g. agent_protocol/).
+- Only produce files within your module's scope: package source files and test files.
 - Write real, runnable code. No stubs, no TODOs, no placeholders.
 - Write tests that verify the module satisfies its interface contract.
 - Keep dependencies minimal. Only import what's in the tech stack.

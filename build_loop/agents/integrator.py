@@ -36,7 +36,10 @@ Your job:
 
 CRITICAL RULES:
 - Do NOT create files that already exist in TEMPLATE FILES. Those are managed by the template.
-- Do NOT create files that builder modules already produced. Check EXISTING FILES.
+- Do NOT overwrite any file that a builder module already produced. Check EXISTING FILES. \
+  If you include a path that a builder already owns, the build WILL fail deterministically.
+- You ARE the sole owner of: pyproject.toml, README.md, setup.py, setup.cfg, \
+  requirements.txt, Makefile, Dockerfile. Create or update these as needed.
 - pyproject.toml [project.scripts] must point at the ACTUAL CLI module, not a placeholder.
   Look at EXPORT METADATA to find which module exports a main() function.
 - README examples must use the ACTUAL field names from the built models, not guesses.

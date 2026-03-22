@@ -242,6 +242,7 @@ class AcceptanceResult(BaseModel):
 
 from build_loop.contract import BuildContract
 from build_loop.environment import EnvironmentSnapshot
+from build_loop.freeform_journal import FreeformJournal
 from build_loop.policy import PolicyDecision
 
 
@@ -301,3 +302,9 @@ class BuildState(BaseModel):
 
     acceptance: AcceptanceResult | None = None
     output_dir: str = ""
+
+    # Freeform iteration journal — optional so old state files still load
+    freeform_journal: FreeformJournal | None = Field(
+        default=None,
+        description="Structured issue/attempt journal for freeform runs. None for template_first.",
+    )

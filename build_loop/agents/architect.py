@@ -31,11 +31,12 @@ class ArchitectAgent:
         mode: BuildMode = BuildMode.TEMPLATE_FIRST,
         confirm_callback=None,
         run_optimizer: bool = False,
+        mode_explicit: bool = False,
     ):
         self.mode = mode
         self.output_dir = output_dir
         self._confirm = confirm_callback
-        self.decision: RouteDecision = route(mode)
+        self.decision: RouteDecision = route(mode, explicit=mode_explicit)
 
         # Lazy import: only load the selected mode's module
         if mode == BuildMode.TEMPLATE_FIRST:

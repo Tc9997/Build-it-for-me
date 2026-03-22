@@ -45,7 +45,7 @@ Examples:
     parser.add_argument(
         "--mode", "-m",
         choices=[m.value for m in BuildMode],
-        default=BuildMode.TEMPLATE_FIRST.value,
+        default=None,
         help="Build mode: template_first (default) or freeform (experimental)",
     )
     parser.add_argument(
@@ -76,15 +76,21 @@ Examples:
         console.print("[red]No idea provided.[/red]")
         sys.exit(1)
 
-    mode = BuildMode(args.mode)
-    if mode == BuildMode.FREEFORM:
-        console.print("[bold yellow]Running in freeform (experimental) mode[/bold yellow]")
+    # Detect if user explicitly passed --mode (default is None when omitted)
+    mode_explicit = args.mode is not None
+    mode = BuildMode(args.mode or BuildMode.TEMPLATE_FIRST.value)
 
     architect = ArchitectAgent(
         output_dir=args.output,
         mode=mode,
         run_optimizer=args.optimize,
+        mode_explicit=mode_explicit,
     )
+
+    # Announce the route decision
+    console.print(f"[dim]{architect.decision.summary}[/dim]")
+    if architect.decision.promise_level.value == "best_effort":
+        console.print("[bold yellow]Promise: best-effort (experimental, no verifier)[/bold yellow]")
 
     if args.resume:
         architect.resume(args.resume)

@@ -60,16 +60,30 @@ class BuildEngine(ABC):
         ...
 
 
+class RouteOrigin(str, Enum):
+    """How the engine was selected."""
+    EXPLICIT = "explicit"    # User chose this mode via --mode flag
+    DEFAULT = "default"      # No --mode flag — used the default mode
+    DEGRADED = "degraded"    # Originally another mode, fell back due to policy/error
+
+
 class RouteDecision(BaseModel):
     """The result of selecting an engine for a build request.
 
-    Captures not just which engine was selected, but why and with
-    what confidence. This makes routing auditable and testable.
+    Captures which engine was selected, why, with what confidence,
+    and how the selection was made. Auditable and testable.
     """
     model_config = {"extra": "forbid"}
 
     engine_name: str
     promise_level: PromiseLevel
+    origin: RouteOrigin = RouteOrigin.DEFAULT
     confidence: float = Field(ge=0.0, le=1.0, default=1.0)
     rationale: str = ""
-    mode_value: str = ""  # The BuildMode enum value, for CLI compatibility
+    mode_value: str = ""
+
+    @property
+    def summary(self) -> str:
+        """One-line human-readable summary for CLI output."""
+        promise = "verified" if self.promise_level == PromiseLevel.VERIFIED else "best-effort"
+        return f"Engine: {self.engine_name} | Promise: {promise} | Origin: {self.origin.value}"

@@ -363,55 +363,78 @@ def write_project(
     output_dir: str,
     safe_write_fn,
 ) -> None:
-    """Write all generated files to the output directory."""
+    """Write all generated files to the output directory.
+
+    All path ownership is validated BEFORE any file is written.
+    No file touches disk until every conflict check passes.
+    """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     files_written = 0
 
+    # Ownership rules (deterministic guards, not prompt-only):
+    # 1. Planner interface files are registered first ("planner" owner).
+    # 2. Builders own module-local files. No builder may claim a planner path.
+    # 3. Builders must NOT produce integrator-owned shared files.
+    # 4. No two builders may claim the same path.
+    # 5. Integrator owns top-level metadata/wiring. May NOT overwrite builder/planner files.
+
+    _INTEGRATOR_OWNED_BASENAMES = frozenset({
+        "pyproject.toml", "setup.py", "setup.cfg", "README.md",
+        "requirements.txt", "Makefile", "Dockerfile",
+    })
+
+    all_files: dict[str, str] = {}
+    path_owners: dict[str, str] = {}  # path → owner label
+
+    # Phase 1: Planner interface files
     if state.plan:
         for iface in state.plan.interfaces:
             if iface.code:
-                safe_write_fn(iface.file_path, iface.code)
-                files_written += 1
+                all_files[iface.file_path] = iface.code
+                path_owners[iface.file_path] = "planner"
 
-    # Collect all artifact files. Detect duplicate paths across builders.
-    # Integration wiring is the sole owner of shared files (pyproject.toml, README, etc.)
-    # and is allowed to overwrite artifact files.
-    all_files: dict[str, str] = {}
-    path_owners: dict[str, str] = {}  # path → module_id for conflict detection
-
+    # Phase 2: Builder artifact files
     for mid in sorted(state.artifacts.keys()):
         artifact = state.artifacts[mid]
         for path, content in artifact.files.items():
+            basename = path.rsplit("/", 1)[-1] if "/" in path else path
+
+            if basename in _INTEGRATOR_OWNED_BASENAMES:
+                raise PipelineError(
+                    f"Builder '{mid}' produced integrator-owned file '{path}'. "
+                    f"Builders must not create {basename} — that is the integrator's job."
+                )
+
             if path in path_owners:
                 raise PipelineError(
                     f"Duplicate file path '{path}' produced by both "
-                    f"'{path_owners[path]}' and '{mid}'. "
-                    f"Builders must not write to shared files."
+                    f"'{path_owners[path]}' and builder '{mid}'."
                 )
             all_files[path] = content
-            path_owners[path] = mid
+            path_owners[path] = f"builder:{mid}"
+
         for path, content in artifact.tests.items():
             if path in path_owners:
                 raise PipelineError(
                     f"Duplicate test path '{path}' produced by both "
-                    f"'{path_owners[path]}' and '{mid}'."
+                    f"'{path_owners[path]}' and builder '{mid}'."
                 )
             all_files[path] = content
-            path_owners[path] = mid
+            path_owners[path] = f"builder:{mid}"
 
-    # Integration wiring may overwrite builder files only for known shared
-    # metadata files. Other overwrites are flagged.
-    _INTEGRATOR_OWNED = {"pyproject.toml", "setup.py", "setup.cfg", "README.md",
-                         "requirements.txt", "Makefile", "Dockerfile", ".gitignore",
-                         "__init__.py", "__main__.py"}
+    # Phase 3: Integrator wiring files
     if state.integration and state.integration.wiring_files:
         for path, content in state.integration.wiring_files.items():
-            basename = path.rsplit("/", 1)[-1] if "/" in path else path
-            if path in path_owners and basename not in _INTEGRATOR_OWNED:
-                log("pipeline", f"  [yellow]Warning: integrator overwrites builder file '{path}' (from {path_owners[path]})[/yellow]")
+            if path in path_owners:
+                raise PipelineError(
+                    f"Integrator tried to overwrite '{path}' "
+                    f"(owned by '{path_owners[path]}'). "
+                    f"Integrator may only create new files or integrator-owned shared files."
+                )
             all_files[path] = content
 
+    # All checks passed — now write everything
     for path, content in all_files.items():
         safe_write_fn(path, content)
         files_written += 1
