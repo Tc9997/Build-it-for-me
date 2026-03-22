@@ -47,7 +47,7 @@ class TestFetchUrlHostBlocking:
     def test_rejects_link_local(self):
         result = fetch_url("http://169.254.169.254/latest/meta-data/")
         assert "Rejected" in result.content
-        assert "link-local" in result.content.lower()
+        assert "link-local" in result.content.lower() or "private" in result.content.lower()
 
     def test_rejects_10_x_private(self):
         result = fetch_url("http://10.0.0.1/internal")
@@ -68,6 +68,20 @@ class TestFetchUrlHostBlocking:
         """172.32.x.x is not private — should not be blocked by host check."""
         blocked = _is_blocked_host("http://172.32.0.1/ok")
         assert blocked is None
+
+    def test_rejects_alternate_loopback_127_1(self):
+        """127.1 is a valid loopback encoding — must be blocked."""
+        blocked = _is_blocked_host("http://127.1/secret")
+        assert blocked is not None
+        assert "loopback" in blocked.lower() or "private" in blocked.lower()
+
+    def test_rejects_localhost_with_trailing_dot(self):
+        blocked = _is_blocked_host("http://localhost./secret")
+        assert blocked is not None
+
+    def test_rejects_zero_ip(self):
+        blocked = _is_blocked_host("http://0.0.0.0/secret")
+        assert blocked is not None
 
 
 class TestFetchUrlAllowed:

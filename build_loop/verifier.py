@@ -366,13 +366,24 @@ class Verifier:
         )
 
     def _check_http_probe(self, signal: HttpProbeSignal, run_mode: str) -> SignalResult:
-        """Probe an HTTP endpoint. Only HTTP/HTTPS or relative paths allowed."""
+        """Probe an HTTP endpoint. Only HTTP/HTTPS or relative paths allowed.
+
+        Relative paths are allowed (prepended with localhost for the project's
+        own service). Absolute URLs are checked for SSRF — no loopback/private.
+        """
         url = signal.path
         if url.startswith("/"):
-            # Relative path — prepend localhost
+            # Relative path — prepend localhost (probing the project's own service)
             url = f"http://localhost:8000{signal.path}"
         elif url.startswith("http://") or url.startswith("https://"):
-            pass  # Valid scheme
+            # Absolute URL — check for SSRF (no loopback/private except localhost:8000)
+            from build_loop.web import _is_blocked_host
+            blocked = _is_blocked_host(url)
+            if blocked:
+                return SignalResult(
+                    signal_type="http_probe", description=signal.description,
+                    passed=False, detail=f"Rejected: {blocked}",
+                )
         else:
             return SignalResult(
                 signal_type="http_probe", description=signal.description,

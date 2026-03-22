@@ -400,9 +400,16 @@ def write_project(
             all_files[path] = content
             path_owners[path] = mid
 
-    # Integration wiring overwrites are allowed — integrator owns shared files
+    # Integration wiring may overwrite builder files only for known shared
+    # metadata files. Other overwrites are flagged.
+    _INTEGRATOR_OWNED = {"pyproject.toml", "setup.py", "setup.cfg", "README.md",
+                         "requirements.txt", "Makefile", "Dockerfile", ".gitignore",
+                         "__init__.py", "__main__.py"}
     if state.integration and state.integration.wiring_files:
         for path, content in state.integration.wiring_files.items():
+            basename = path.rsplit("/", 1)[-1] if "/" in path else path
+            if path in path_owners and basename not in _INTEGRATOR_OWNED:
+                log("pipeline", f"  [yellow]Warning: integrator overwrites builder file '{path}' (from {path_owners[path]})[/yellow]")
             all_files[path] = content
 
     for path, content in all_files.items():
@@ -554,7 +561,7 @@ def optimize(
             if verify.success:
                 console.print("  [bold green]Fixed — tests pass again[/bold green]")
                 return
-        console.print("  [yellow]Could not fix optimization breakage[/yellow]")
+        raise PipelineError("Optimization broke tests and could not be repaired")
 
 
 def apply_fix(fix: DebugFix, executor: ExecutorAgent, venv_cmd_fn, safe_write_fn, state: BuildState) -> None:

@@ -162,9 +162,9 @@ class TemplateFirstOrchestrator:
                     raise PipelineError(f"Post-write checks failed: {pw_result.errors}")
                 from_phase = "setup"
 
-            # Same gates as run()
-            self._checkpoint_gate("setup")
-
+            if from_phase == "setup":
+                # Only gate setup if we're actually going to run it
+                self._checkpoint_gate("setup")
             if from_phase == "setup":
                 if not self._should_skip("setup"):
                     phase("10", "SETUP", "Installing dependencies...")
@@ -202,9 +202,8 @@ class TemplateFirstOrchestrator:
                     phase("12", "VERIFY", "[SKIPPED — degraded mode]")
                 from_phase = "accept"
 
-            self._checkpoint_gate("acceptance")
-
             if from_phase == "accept":
+                self._checkpoint_gate("acceptance")
                 phase("14", "ACCEPTANCE", "Final acceptance...")
                 self._acceptance_check()
                 save_state(self.state, self.output_dir)

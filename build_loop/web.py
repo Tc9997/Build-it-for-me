@@ -230,9 +230,17 @@ def fetch_github_file(repo: str, path: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _is_blocked_host(url: str) -> str | None:
-    """Check if a URL targets a blocked host. Returns reason or None."""
+    """Check if a URL targets a blocked host. Returns reason or None.
+
+    Resolves the hostname to IP addresses and checks the resolved IPs,
+    not just the literal hostname string. This catches alternate encodings
+    like 127.1, 0x7f000001, ::ffff:127.0.0.1, localhost., etc.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
     try:
-        from urllib.parse import urlparse
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower()
     except Exception:
@@ -241,27 +249,53 @@ def _is_blocked_host(url: str) -> str | None:
     if not host:
         return "No hostname in URL"
 
-    # Reject localhost and loopback
-    if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
-        return f"Blocked: localhost/loopback ({host})"
+    # Quick literal checks (catch obvious cases before DNS)
+    if host in ("localhost", "localhost."):
+        return f"Blocked: localhost ({host})"
 
-    # Reject link-local
-    if host.startswith("169.254."):
-        return f"Blocked: link-local address ({host})"
+    # Try to parse as an IP address directly (catches numeric encodings)
+    try:
+        addr = ipaddress.ip_address(host)
+        reason = _check_ip(addr, host)
+        if reason:
+            return reason
+    except ValueError:
+        pass  # Not a literal IP — resolve via DNS
 
-    # Reject private RFC1918 ranges
-    if host.startswith("10."):
-        return f"Blocked: private network ({host})"
-    if host.startswith("192.168."):
-        return f"Blocked: private network ({host})"
-    if host.startswith("172."):
-        try:
-            second = int(host.split(".")[1])
-            if 16 <= second <= 31:
-                return f"Blocked: private network ({host})"
-        except (ValueError, IndexError):
-            pass
+    # Resolve hostname to IPs and check each one
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for info in infos:
+            ip_str = info[4][0]
+            try:
+                addr = ipaddress.ip_address(ip_str)
+                reason = _check_ip(addr, f"{host} → {ip_str}")
+                if reason:
+                    return reason
+            except ValueError:
+                pass
+    except socket.gaierror:
+        pass  # DNS resolution failed — allow (will fail at curl anyway)
 
+    return None
+
+
+def _check_ip(addr, label: str) -> str | None:
+    """Check if an IP address is blocked (loopback, private, link-local)."""
+    import ipaddress
+    if addr.is_loopback:
+        return f"Blocked: loopback ({label})"
+    if addr.is_private:
+        return f"Blocked: private network ({label})"
+    if addr.is_link_local:
+        return f"Blocked: link-local ({label})"
+    if addr.is_reserved:
+        return f"Blocked: reserved ({label})"
+    # IPv4-mapped IPv6 (::ffff:127.0.0.1)
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        mapped = addr.ipv4_mapped
+        if mapped.is_loopback or mapped.is_private or mapped.is_link_local:
+            return f"Blocked: mapped private/loopback ({label})"
     return None
 
 
