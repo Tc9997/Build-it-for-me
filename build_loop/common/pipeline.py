@@ -615,6 +615,17 @@ def print_final_report(state: BuildState) -> None:
     report.add_row("Acceptance", f"[{color}]{status}[/{color}]")
     report.add_row("Output", state.output_dir)
 
+    # Cost summary
+    from build_loop.llm import get_cost_summary
+    costs = get_cost_summary()
+    if costs["total_calls"] > 0:
+        report.add_row("LLM calls", str(costs["total_calls"]))
+        report.add_row("Tokens (in/out)", f"{costs['total_input_tokens']:,} / {costs['total_output_tokens']:,}")
+        report.add_row("Est. cost", f"${costs['total_cost_usd']:.4f}")
+        for model, mc in costs.get("by_model", {}).items():
+            short = model.split("-")[1] if "-" in model else model
+            report.add_row(f"  {short}", f"{mc['calls']} calls, ${mc['cost_usd']:.4f}")
+
     if acc:
         report.add_row("Passed", ", ".join(acc.criteria_passed) or "—")
         if acc.criteria_failed:
