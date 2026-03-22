@@ -35,21 +35,48 @@ class StrictModel(BaseModel):
 # ---------------------------------------------------------------------------
 
 class CliExitSignal(StrictModel):
-    """Run a command and check exit code."""
+    """Run a command and check exit code.
+
+    command must be a single executable token (no spaces).
+    Use args for additional tokens.
+    Example: command="python", args=["-m", "mypackage.cli", "version"]
+    """
     type: Literal["cli_exit"] = "cli_exit"
     description: str
     command: str
     args: list[str] = Field(default_factory=list)
     expect_exit: int = 0
 
+    @model_validator(mode="after")
+    def validate_command_is_single_token(self):
+        if " " in self.command and not self.args:
+            raise ValueError(
+                f"command must be a single executable token, not a shell string. "
+                f"Got: {self.command!r}. Split into command='python' args=['-m', ...]"
+            )
+        return self
+
 
 class StdoutContainsSignal(StrictModel):
-    """Run a command and check stdout contains a string."""
+    """Run a command and check stdout contains a string.
+
+    command must be a single executable token (no spaces).
+    Use args for additional tokens.
+    """
     type: Literal["stdout_contains"] = "stdout_contains"
     description: str
     command: str
     args: list[str] = Field(default_factory=list)
     expect_contains: str
+
+    @model_validator(mode="after")
+    def validate_command_is_single_token(self):
+        if " " in self.command and not self.args:
+            raise ValueError(
+                f"command must be a single executable token, not a shell string. "
+                f"Got: {self.command!r}. Split into command='python' args=['-m', ...]"
+            )
+        return self
 
 
 class HttpProbeSignal(StrictModel):

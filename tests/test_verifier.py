@@ -99,36 +99,27 @@ class TestCliExitSignal:
 
 
 class TestShellStyleCommandNormalization:
-    """Verifier must handle shell-style commands where command contains spaces."""
+    """Contract rejects shell-style commands. Verifier normalizes as fallback."""
 
-    def test_cli_exit_with_shell_style_command(self, tmp_path):
-        """command='python ok.py' with empty args should be normalized."""
-        (tmp_path / "ok.py").write_text("pass\n")
-        contract = _make_contract(success_signals=[
+    def test_contract_rejects_shell_style_cli_exit(self):
+        """Shell-style command with empty args fails at contract level."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="single executable"):
             CliExitSignal(
-                description="shell-style",
-                command=f"{sys.executable} ok.py",  # space in command, no args
+                description="bad",
+                command="python ok.py",
                 args=[],
-                expect_exit=0,
-            ),
-        ])
-        v = Verifier(str(tmp_path))
-        result = v.run(contract)
-        assert result.tier2_results[0].passed, f"Failed: {result.tier2_results[0].detail}"
+            )
 
-    def test_stdout_contains_with_shell_style_command(self, tmp_path):
-        (tmp_path / "hello.py").write_text("print('hello')\n")
-        contract = _make_contract(success_signals=[
+    def test_contract_rejects_shell_style_stdout_contains(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="single executable"):
             StdoutContainsSignal(
-                description="shell-style stdout",
-                command=f"{sys.executable} hello.py",
+                description="bad",
+                command="python hello.py",
                 args=[],
                 expect_contains="hello",
-            ),
-        ])
-        v = Verifier(str(tmp_path))
-        result = v.run(contract)
-        assert result.tier2_results[0].passed
+            )
 
     def test_structured_command_still_works(self, tmp_path):
         """Properly structured command+args still works unchanged."""

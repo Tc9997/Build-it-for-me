@@ -138,6 +138,41 @@ class TestSuccessSignalDiscrimination:
         with pytest.raises(ValidationError):
             ImportCheckSignal(description="test")  # missing module_name
 
+    def test_cli_exit_rejects_shell_style_command(self):
+        """command with spaces and empty args must fail validation."""
+        with pytest.raises(ValidationError, match="single executable"):
+            CliExitSignal(
+                description="bad",
+                command="python -m mypackage.cli version",
+                args=[],
+            )
+
+    def test_cli_exit_accepts_structured_command(self):
+        s = CliExitSignal(
+            description="good",
+            command="python",
+            args=["-m", "mypackage.cli", "version"],
+        )
+        assert s.command == "python"
+
+    def test_stdout_contains_rejects_shell_style_command(self):
+        with pytest.raises(ValidationError, match="single executable"):
+            StdoutContainsSignal(
+                description="bad",
+                command="python -m mypackage.cli version",
+                args=[],
+                expect_contains="1.0",
+            )
+
+    def test_command_with_spaces_and_args_is_allowed(self):
+        """If args is non-empty, spaces in command could be a path — allow it."""
+        s = CliExitSignal(
+            description="path with space",
+            command="/usr/local/bin/my tool",
+            args=["--version"],
+        )
+        assert " " in s.command  # allowed because args is non-empty
+
     def test_stdout_contains_requires_fields(self):
         with pytest.raises(ValidationError):
             StdoutContainsSignal(description="test")  # missing command & expect_contains
