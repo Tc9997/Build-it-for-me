@@ -27,7 +27,7 @@ from build_loop.schemas import (
 class TestExportAnalyzer:
     """AST-based export extraction from built module code."""
 
-    def test_extracts_classes(self):
+    def test_extracts_classes_from_production(self):
         artifact = BuildArtifact(
             module_id="mod_a",
             files={"mod_a.py": "class MyModel:\n    pass\n\nclass OtherModel:\n    pass\n"},
@@ -37,7 +37,7 @@ class TestExportAnalyzer:
         assert "OtherModel" in exports.exported_classes
         assert exports.syntax_valid
 
-    def test_extracts_functions(self):
+    def test_extracts_functions_from_production(self):
         artifact = BuildArtifact(
             module_id="mod_a",
             files={"mod_a.py": "def process():\n    pass\n\nasync def fetch():\n    pass\n"},
@@ -73,7 +73,7 @@ class TestExportAnalyzer:
         assert not exports.syntax_valid
         assert len(exports.parse_errors) > 0
 
-    def test_records_all_files(self):
+    def test_records_production_and_test_files_separately(self):
         artifact = BuildArtifact(
             module_id="mod_a",
             files={"mod_a.py": "pass", "README.md": "# Hi"},
@@ -82,7 +82,9 @@ class TestExportAnalyzer:
         exports = analyze_artifact(artifact)
         assert "mod_a.py" in exports.files
         assert "README.md" in exports.files
-        assert "tests/test_a.py" in exports.files
+        assert "tests/test_a.py" in exports.test_files
+        # Test files are NOT in the production files list
+        assert "tests/test_a.py" not in exports.files
 
     def test_skips_non_python_files(self):
         artifact = BuildArtifact(
@@ -90,18 +92,35 @@ class TestExportAnalyzer:
             files={"data.json": '{"key": "value"}'},
         )
         exports = analyze_artifact(artifact)
-        assert exports.syntax_valid  # No Python to parse
+        assert exports.syntax_valid
         assert exports.exported_classes == []
 
-    def test_analyzes_test_files_too(self):
+    def test_test_symbols_not_in_production_exports(self):
+        """Test file classes/functions must NOT appear in exported_classes/functions."""
         artifact = BuildArtifact(
             module_id="mod_a",
             files={"mod_a.py": "class Foo: pass"},
-            tests={"tests/test_a.py": "def test_foo(): pass"},
+            tests={"tests/test_a.py": "class TestFoo: pass\ndef test_foo(): pass"},
         )
         exports = analyze_artifact(artifact)
+        # Production export
         assert "Foo" in exports.exported_classes
-        assert "test_foo" in exports.exported_functions
+        # Test symbols are in test_classes/test_functions, NOT production
+        assert "TestFoo" in exports.test_classes
+        assert "test_foo" in exports.test_functions
+        assert "TestFoo" not in exports.exported_classes
+        assert "test_foo" not in exports.exported_functions
+
+    def test_dependency_resolution_uses_production_only(self):
+        """A module that only exports symbols from tests has empty production exports."""
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={},  # No production files
+            tests={"tests/test_a.py": "class FakeExport: pass"},
+        )
+        exports = analyze_artifact(artifact)
+        assert exports.exported_classes == []
+        assert "FakeExport" in exports.test_classes
 
 
 # =========================================================================
@@ -115,7 +134,7 @@ class TestFrameworkHints:
         hints = get_framework_hints(["pydantic>=2.0"])
         assert "field_validator" in hints
         assert "model_dump" in hints
-        assert "@validator" in hints  # mentioned as "do NOT use"
+        assert "@validator" in hints
 
     def test_fastapi_hints_present(self):
         hints = get_framework_hints(["fastapi>=0.110"])
@@ -195,7 +214,6 @@ class TestDependencyContext:
         module_specs = {"mod_b": module}
         all_exports = {
             "mod_a": ModuleExports(module_id="mod_a", files=["a.py"]),
-            # mod_c not built yet
         }
         result = _gather_dependency_exports(module, module_specs, all_exports)
         assert "mod_a" in result
@@ -251,7 +269,8 @@ class TestPreIntegrationValidation:
         assert not result.valid
         assert any("syntax" in e.lower() for e in result.errors)
 
-    def test_missing_planned_file_warns(self):
+    def test_missing_planned_file_blocks(self):
+        """Missing planned production file is a blocking error, not a warning."""
         plan = BuildPlan(
             project_name="test", description="test", tech_stack=["python"],
             modules=[
@@ -262,13 +281,51 @@ class TestPreIntegrationValidation:
         )
         exports = {
             "mod_a": ModuleExports(
-                module_id="mod_a", files=["mod_a.py"],  # Missing mod_a_utils.py
+                module_id="mod_a", files=["mod_a.py"],
                 syntax_valid=True,
             ),
         }
         result = validate_pre_integration(plan, exports)
-        # Warning, not error
-        assert any("mod_a_utils.py" in w for w in result.warnings)
+        assert not result.valid
+        assert any("mod_a_utils.py" in e for e in result.errors)
+
+    def test_same_batch_dependency_blocks(self):
+        """Two modules in the same batch with a dependency edge is a blocking error."""
+        plan = BuildPlan(
+            project_name="test", description="test", tech_stack=["python"],
+            modules=[
+                ModuleSpec(id="mod_a", name="A", description="test", size=TaskSize.SMALL),
+                ModuleSpec(id="mod_b", name="B", description="test", size=TaskSize.SMALL,
+                           dependencies=["mod_a"]),
+            ],
+            build_order=[["mod_a", "mod_b"]],  # Same batch!
+        )
+        exports = {
+            "mod_a": ModuleExports(module_id="mod_a", syntax_valid=True),
+            "mod_b": ModuleExports(module_id="mod_b", syntax_valid=True),
+        }
+        result = validate_pre_integration(plan, exports)
+        assert not result.valid
+        assert any("same" in e.lower() and "batch" in e.lower() for e in result.errors)
+
+    def test_cross_batch_dependency_ok(self):
+        """Dependencies across batches are fine."""
+        plan = BuildPlan(
+            project_name="test", description="test", tech_stack=["python"],
+            modules=[
+                ModuleSpec(id="mod_a", name="A", description="test", size=TaskSize.SMALL),
+                ModuleSpec(id="mod_b", name="B", description="test", size=TaskSize.SMALL,
+                           dependencies=["mod_a"]),
+            ],
+            build_order=[["mod_a"], ["mod_b"]],  # Different batches
+        )
+        exports = {
+            "mod_a": ModuleExports(module_id="mod_a", syntax_valid=True,
+                                   exported_classes=["Foo"]),
+            "mod_b": ModuleExports(module_id="mod_b", syntax_valid=True),
+        }
+        result = validate_pre_integration(plan, exports)
+        assert result.valid
 
     def test_unbuilt_dependency_warns(self):
         plan = BuildPlan(
@@ -281,11 +338,33 @@ class TestPreIntegrationValidation:
             build_order=[["mod_a"], ["mod_b"]],
         )
         exports = {
-            # mod_a not built (failed)
             "mod_b": ModuleExports(module_id="mod_b", syntax_valid=True),
         }
         result = validate_pre_integration(plan, exports)
         assert any("mod_a" in w and "not built" in w for w in result.warnings)
+
+    def test_test_only_exports_not_counted(self):
+        """A dependency that only exports from test files has empty production exports."""
+        plan = BuildPlan(
+            project_name="test", description="test", tech_stack=["python"],
+            modules=[
+                ModuleSpec(id="mod_a", name="A", description="test", size=TaskSize.SMALL),
+                ModuleSpec(id="mod_b", name="B", description="test", size=TaskSize.SMALL,
+                           dependencies=["mod_a"]),
+            ],
+            build_order=[["mod_a"], ["mod_b"]],
+        )
+        exports = {
+            "mod_a": ModuleExports(
+                module_id="mod_a", syntax_valid=True,
+                exported_classes=[],  # No production exports
+                test_classes=["FakeExport"],  # Only in tests
+            ),
+            "mod_b": ModuleExports(module_id="mod_b", syntax_valid=True),
+        }
+        result = validate_pre_integration(plan, exports)
+        # Should warn that mod_a has no production exports
+        assert any("no production exports" in w for w in result.warnings)
 
 
 # =========================================================================
@@ -296,11 +375,8 @@ class TestBuilderDependencyContext:
     """Builder prompt includes actual dependency exports."""
 
     def test_builder_accepts_dependency_exports(self):
-        """BuilderAgent.run() signature accepts dependency_exports."""
         from build_loop.agents.builder import BuilderAgent
         agent = BuilderAgent()
-
-        # Mock the LLM call
         agent.call_json = MagicMock(return_value={
             "module_id": "mod_b",
             "files": {"mod_b.py": "from mod_a import Foo"},
@@ -326,15 +402,12 @@ class TestBuilderDependencyContext:
         artifact = agent.run(module, plan, dependency_exports=dep_exports)
         assert artifact.module_id == "mod_b"
 
-        # Verify the prompt included dependency context
-        call_args = agent.call_json.call_args
-        prompt = call_args[0][0]
+        prompt = agent.call_json.call_args[0][0]
         assert "DEPENDENCY CONTEXT" in prompt
         assert "Foo" in prompt
         assert "Bar" in prompt
 
     def test_builder_includes_framework_hints(self):
-        """Builder prompt includes Pydantic v2 hints when in tech stack."""
         from build_loop.agents.builder import BuilderAgent
         agent = BuilderAgent()
         agent.call_json = MagicMock(return_value={

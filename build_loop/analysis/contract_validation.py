@@ -1,7 +1,10 @@
 """Deterministic pre-integration contract validation.
 
-Compares planned interfaces vs actual built exports. Catches symbol drift
-and file-path drift before the integrator LLM sees anything.
+Compares planned interfaces vs actual built exports. Catches symbol drift,
+file-path drift, and same-batch dependency violations before the integrator
+LLM sees anything.
+
+Uses production exports only — test-file symbols are excluded.
 """
 
 from __future__ import annotations
@@ -27,15 +30,22 @@ def validate_pre_integration(
     """Check that built modules satisfy their planned contracts.
 
     Checks:
-    1. Every approved module produced the planned files
-    2. Modules with consumed interfaces have corresponding exports available
-    3. No syntax errors in any approved module
-    4. No same-batch dependency violations
+    1. Syntax errors in any approved module → error (blocking)
+    2. Missing planned production files → error (blocking)
+    3. Same-batch dependency violations → error (blocking)
+    4. Unbuilt dependencies → warning
+    5. Dependency with no production exports → warning
     """
     result = PreIntegrationResult()
     module_specs = {m.id: m for m in plan.modules}
 
-    # 1. Syntax check — any parse errors are blocking
+    # Build batch position map for same-batch detection
+    batch_of: dict[str, int] = {}
+    for batch_idx, batch_ids in enumerate(plan.build_order):
+        for mid in batch_ids:
+            batch_of[mid] = batch_idx
+
+    # 1. Syntax check — blocking
     for mid, exp in exports.items():
         if not exp.syntax_valid:
             result.errors.append(
@@ -43,46 +53,60 @@ def validate_pre_integration(
             )
             result.valid = False
 
-    # 2. File path coverage — did the module produce expected files?
+    # 2. Missing planned production files — blocking
     for mid, exp in exports.items():
         spec = module_specs.get(mid)
         if not spec:
             continue
         for planned_path in spec.file_paths:
             if planned_path not in exp.files:
-                result.warnings.append(
-                    f"Module '{mid}' planned file '{planned_path}' not found in output"
+                result.errors.append(
+                    f"Module '{mid}' planned production file '{planned_path}' "
+                    f"not found in output. Actual files: {exp.files}"
                 )
+                result.valid = False
 
-    # 3. Dependency symbol resolution — do consumed interfaces exist?
-    # Build a map of all exported symbols per module
-    all_exports_by_module: dict[str, set[str]] = {}
-    for mid, exp in exports.items():
-        symbols = set(exp.exported_classes + exp.exported_functions + exp.exported_constants)
-        all_exports_by_module[mid] = symbols
-
+    # 3. Same-batch dependency violations — blocking
     for mid, spec in module_specs.items():
         if mid not in exports:
-            continue  # Module wasn't built (failed)
+            continue
+        my_batch = batch_of.get(mid)
+        if my_batch is None:
+            continue
+        for dep_id in spec.dependencies:
+            dep_batch = batch_of.get(dep_id)
+            if dep_batch is not None and dep_batch == my_batch:
+                result.errors.append(
+                    f"Module '{mid}' depends on '{dep_id}' but both are in "
+                    f"batch {my_batch + 1}. Dependency context is unavailable "
+                    f"for same-batch modules."
+                )
+                result.valid = False
 
+    # 4. Unbuilt dependency — warning
+    for mid, spec in module_specs.items():
+        if mid not in exports:
+            continue
         for dep_id in spec.dependencies:
             if dep_id not in exports:
                 result.warnings.append(
                     f"Module '{mid}' depends on '{dep_id}' which was not built"
                 )
-                continue
 
-            # Check if consumed interfaces are actually exported by dependencies
-            for iface_name in spec.interfaces_consumed:
-                # Find which dependency provides this interface
-                dep_spec = module_specs.get(dep_id)
-                if dep_spec and iface_name in dep_spec.interfaces_provided:
-                    # The dependency should export symbols related to this interface
-                    dep_exports = all_exports_by_module.get(dep_id, set())
-                    if not dep_exports:
-                        result.warnings.append(
-                            f"Module '{mid}' consumes interface '{iface_name}' from "
-                            f"'{dep_id}' but '{dep_id}' exports no symbols"
-                        )
+    # 5. Dependency with no production exports — warning
+    all_prod_exports: dict[str, set[str]] = {}
+    for mid, exp in exports.items():
+        symbols = set(exp.exported_classes + exp.exported_functions + exp.exported_constants)
+        all_prod_exports[mid] = symbols
+
+    for mid, spec in module_specs.items():
+        if mid not in exports:
+            continue
+        for dep_id in spec.dependencies:
+            if dep_id in all_prod_exports and not all_prod_exports[dep_id]:
+                result.warnings.append(
+                    f"Module '{mid}' depends on '{dep_id}' but '{dep_id}' "
+                    f"has no production exports"
+                )
 
     return result
