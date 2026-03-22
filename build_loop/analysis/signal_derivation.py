@@ -1,8 +1,11 @@
-"""Derive success signals deterministically from contract archetype + goals.
+"""Derive base success signals deterministically from contract archetype + goals.
 
-Replaces LLM-generated signals with correctly structured ones.
-The spec compiler still produces goals, constraints, behavioral_expectations,
-and invariants — just not the machine-checkable signals.
+These are merged with (not replacing) LLM-generated signals from the spec
+compiler. Derived signals cover archetype-level guarantees. LLM signals
+cover project-specific deliverables the archetype can't know about.
+
+CLI checks use the console_scripts entry point from the template, not
+python -m, because not all packages have __main__.py.
 """
 
 from __future__ import annotations
@@ -12,15 +15,14 @@ from build_loop.contract import (
     CliExitSignal,
     FileExistsSignal,
     ImportCheckSignal,
-    StdoutContainsSignal,
 )
 
 
 def derive_signals(contract: BuildContract) -> list:
-    """Derive success signals from contract archetype and goals.
+    """Derive base signals from contract archetype and goals.
 
-    Returns deterministic signals based on the archetype pattern
-    and contract field values. Always correctly structured.
+    Returns deterministic signals for archetype-level guarantees only.
+    These should be MERGED with project-specific LLM signals, not replace them.
     """
     signals: list = []
     pkg = contract.project_name.replace("-", "_")
@@ -54,52 +56,19 @@ def derive_signals(contract: BuildContract) -> list:
 
 
 def _python_cli_signals(contract: BuildContract, pkg: str) -> list:
-    """Signals specific to python_cli archetype."""
+    """Signals specific to python_cli archetype.
+
+    Does NOT assume python -m works (requires __main__.py).
+    Only checks file existence and importability — runtime CLI checks
+    are handled by the archetype verifier pack which reads pyproject.toml.
+    """
     signals: list = []
-    goals_lower = " ".join(contract.goals).lower()
 
-    # CLI --help must work (either via python -m or via entry point)
-    signals.append(CliExitSignal(
-        description="CLI --help exits 0",
-        command="python",
-        args=["-m", pkg, "--help"],
-        expect_exit=0,
+    # Package __init__.py exists
+    signals.append(FileExistsSignal(
+        description="Package __init__.py exists",
+        file_path=f"{pkg}/__init__.py",
     ))
-
-    # If goals mention CLI, version, schema, validate, registry etc.
-    # derive specific subcommand signals
-    if "version" in goals_lower:
-        signals.append(CliExitSignal(
-            description="CLI version command works",
-            command="python",
-            args=["-m", pkg, "version"],
-            expect_exit=0,
-        ))
-
-    if "schema" in goals_lower:
-        # Use --help for the subcommand to avoid guessing positional vs flag
-        signals.append(CliExitSignal(
-            description="CLI schema subcommand exists",
-            command="python",
-            args=["-m", pkg, "schema", "--help"],
-            expect_exit=0,
-        ))
-
-    if "validate" in goals_lower:
-        signals.append(CliExitSignal(
-            description="CLI validate subcommand exists",
-            command="python",
-            args=["-m", pkg, "validate", "--help"],
-            expect_exit=0,
-        ))
-
-    if "registry" in goals_lower:
-        signals.append(CliExitSignal(
-            description="CLI registry subcommand exists",
-            command="python",
-            args=["-m", pkg, "registry", "--help"],
-            expect_exit=0,
-        ))
 
     return signals
 
@@ -118,12 +87,34 @@ def _fastapi_service_signals(contract: BuildContract, pkg: str) -> list:
         module_name="fastapi",
     ))
 
-    # App imports without error
-    signals.append(CliExitSignal(
-        description="App module imports successfully",
-        command="python",
-        args=["-c", f"from {pkg}.app import app"],
-        expect_exit=0,
-    ))
-
     return signals
+
+
+def merge_signals(derived: list, llm_generated: list) -> list:
+    """Merge derived base signals with LLM-generated project-specific signals.
+
+    Derived signals come first (archetype guarantees).
+    LLM signals are appended if they don't duplicate a derived signal.
+    Deduplication is by (type, description) pair.
+    """
+    seen = set()
+    merged = []
+
+    for s in derived:
+        key = (s.type, s.description)
+        if key not in seen:
+            seen.add(key)
+            merged.append(s)
+
+    for s in llm_generated:
+        key = (s.type, s.description)
+        if key not in seen:
+            # Validate LLM signal structure before including
+            if hasattr(s, "command") and hasattr(s, "args"):
+                # Skip malformed CLI signals (spaces in command)
+                if " " in getattr(s, "command", ""):
+                    continue
+            seen.add(key)
+            merged.append(s)
+
+    return merged

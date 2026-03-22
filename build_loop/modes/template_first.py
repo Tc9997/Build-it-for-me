@@ -163,6 +163,13 @@ class TemplateFirstOrchestrator:
                 phase("10", "SETUP", "Installing dependencies...")
                 setup_environment(self.state, self.executor, self._venv_cmd)
                 save_state(self.state, self.output_dir)
+
+                from build_loop.analysis.post_write import run_post_setup_checks
+                ps_result = run_post_setup_checks(self.output_dir)
+                for check in ps_result.checks:
+                    console.print(f"  [green]{check}[/green]")
+                for err in ps_result.errors:
+                    console.print(f"  [bold red]{err}[/bold red]")
                 from_phase = "test"
 
             if from_phase == "test":
@@ -216,12 +223,12 @@ class TemplateFirstOrchestrator:
             research_summary = _compact_research(self.state.research)
             self.contract = self.spec_compiler.run(idea, research_summary)
 
-            # Replace LLM-generated signals with deterministic derived ones
-            from build_loop.analysis.signal_derivation import derive_signals
+            # Merge deterministic base signals with LLM-generated project-specific ones
+            from build_loop.analysis.signal_derivation import derive_signals, merge_signals
             derived = derive_signals(self.contract)
-            if derived:
-                self.contract.success_signals = derived
-                log("contract", f"  {len(derived)} signals derived from archetype")
+            llm_signals = list(self.contract.success_signals)
+            self.contract.success_signals = merge_signals(derived, llm_signals)
+            log("contract", f"  {len(derived)} base + {len(llm_signals)} project signals")
 
             self.state.contract = ContractState(data=self.contract)
             save_state(self.state, self.output_dir)
@@ -321,6 +328,8 @@ class TemplateFirstOrchestrator:
                     console.print(f"  [green]{check}[/green]")
                 for err in ps_result.errors:
                     console.print(f"  [bold red]{err}[/bold red]")
+                if not ps_result.passed:
+                    console.print("  [yellow]Post-setup checks failed — package may not be importable[/yellow]")
             else:
                 phase("10", "SETUP", "[SKIPPED — degraded mode]")
 

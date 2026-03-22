@@ -73,12 +73,23 @@ def _check_python_cli(out: Path, python: str) -> list[SignalResult]:
     if ep_result:
         results.append(ep_result)
 
-    # 5. --help exits 0
-    help_result = _run_command(
-        python, ["-m", pkg.name, "--help"], out,
-        "CLI --help exits 0",
-    )
-    results.append(help_result)
+    # 5. CLI --help exits 0 (via actual entry point, not python -m)
+    cli_target = _find_cli_target(out)
+    if cli_target:
+        module_path, func_name = cli_target
+        # Import and call the actual entry point function
+        help_result = _run_command(
+            python,
+            ["-c", f"import sys; sys.argv=['test','--help']; from {module_path} import {func_name}; {func_name}()"],
+            out, "CLI --help exits 0",
+        )
+        results.append(help_result)
+    elif (pkg / "__main__.py").exists():
+        help_result = _run_command(
+            python, ["-m", pkg.name, "--help"], out,
+            "CLI --help exits 0 (via __main__.py)",
+        )
+        results.append(help_result)
 
     # 6. No scaffold stubs in package
     stubs = _find_stubs(pkg)
@@ -160,6 +171,28 @@ def _check_fastapi_service(out: Path, python: str) -> list[SignalResult]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _find_cli_target(out: Path) -> tuple[str, str] | None:
+    """Find the CLI entry point from pyproject.toml [project.scripts].
+
+    Returns (module_path, function_name) or None.
+    """
+    pyproject = out / "pyproject.toml"
+    if not pyproject.exists():
+        return None
+    try:
+        import tomllib
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
+        scripts = data.get("project", {}).get("scripts", {})
+        for name, target in scripts.items():
+            if ":" in target:
+                module_path, func_name = target.rsplit(":", 1)
+                return (module_path, func_name)
+    except Exception:
+        pass
+    return None
+
 
 def _find_package_dir(out: Path) -> Path | None:
     """Find the main Python package directory."""
