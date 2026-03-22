@@ -378,8 +378,14 @@ def setup_environment(state: BuildState, executor: ExecutorAgent, venv_cmd_fn) -
             ".venv/bin/pip install --upgrade pip",
         ]
         req_path = Path(executor.project_dir) / "requirements.txt"
+        pyproject_path = Path(executor.project_dir) / "pyproject.toml"
         if req_path.exists():
             default_setup.append(".venv/bin/pip install -r requirements.txt")
+        if pyproject_path.exists():
+            # Editable install picks up deps from pyproject.toml including test deps
+            default_setup.append(".venv/bin/pip install -e .")
+        # Always install pytest for the test phase
+        default_setup.append(".venv/bin/pip install pytest")
         results = executor.setup_project(default_setup)
         state.exec_history.extend(results)
         return
@@ -502,8 +508,10 @@ def apply_fix(fix: DebugFix, executor: ExecutorAgent, venv_cmd_fn, safe_write_fn
         safe_write_fn(path, content)
         log("pipeline", f"  patched {path}")
     if fix.new_dependencies:
+        import re
         for dep in fix.new_dependencies:
-            result = executor.run_command(venv_cmd_fn(f"pip install {dep}"))
+            pkg_name = re.split(r"[><=!~\[]", dep)[0].strip()
+            result = executor.run_command(venv_cmd_fn(f"pip install {pkg_name}"))
             state.exec_history.append(result)
 
 
