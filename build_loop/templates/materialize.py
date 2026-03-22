@@ -93,14 +93,19 @@ def materialize(
         dst = output_dir / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
 
+        # Try reading as text for placeholder substitution.
+        # Only catch UnicodeDecodeError on read (binary detection).
+        # Write failures propagate — they're real errors.
         try:
             content = src_path.read_text()
-            for placeholder, value in subs.items():
-                content = content.replace(placeholder, value)
-            dst.write_text(content)
         except UnicodeDecodeError:
-            # Binary file — copy as-is
+            # Binary file — copy as-is, no substitution
             shutil.copy2(src_path, dst)
+            continue
+
+        for placeholder, value in subs.items():
+            content = content.replace(placeholder, value)
+        dst.write_text(content)
 
     # Build and write manifest
     manifest = OwnershipManifest(

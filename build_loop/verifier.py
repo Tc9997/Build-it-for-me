@@ -306,7 +306,13 @@ class Verifier:
                     pass  # python -m <module> is ok
                 elif flag.startswith("/"):
                     return None, f"Rejected: absolute script path {flag}"
+                elif ".." in flag:
+                    return None, f"Rejected: path traversal in script path {flag}"
                 # else: python <relative-script.py> — ok
+            # Check all args for path traversal
+            for arg in argv[1:]:
+                if ".." in arg and not arg.startswith("-"):
+                    return None, f"Rejected: path traversal in argument: {arg}"
         elif executable.startswith("/"):
             return None, f"Rejected: absolute executable path {executable}"
         else:
@@ -360,11 +366,19 @@ class Verifier:
         )
 
     def _check_http_probe(self, signal: HttpProbeSignal, run_mode: str) -> SignalResult:
-        """Probe an HTTP endpoint. For service-mode projects, this expects the
-        service is already running (started by smoke test). Uses curl for isolation."""
+        """Probe an HTTP endpoint. Only HTTP/HTTPS or relative paths allowed."""
         url = signal.path
-        if not url.startswith("http"):
+        if url.startswith("/"):
+            # Relative path — prepend localhost
             url = f"http://localhost:8000{signal.path}"
+        elif url.startswith("http://") or url.startswith("https://"):
+            pass  # Valid scheme
+        else:
+            return SignalResult(
+                signal_type="http_probe", description=signal.description,
+                passed=False,
+                detail=f"Rejected: URL must be http://, https://, or a relative path. Got: {url}",
+            )
 
         try:
             curl_argv = [
@@ -421,8 +435,20 @@ class Verifier:
         )
 
     def _check_import(self, signal: ImportCheckSignal) -> SignalResult:
-        """Check that a Python module is importable in the project venv."""
-        # Use project venv python if available, fall back to sys.executable
+        """Check that a Python module is importable in the project venv.
+
+        Uses python -c directly (not _safe_execute) because import checks
+        require -c. Module name is validated to prevent injection.
+        """
+        import re as _re
+        # Validate module_name is a safe Python identifier path
+        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", signal.module_name):
+            return SignalResult(
+                signal_type="import_check", description=signal.description,
+                passed=False,
+                detail=f"Rejected: invalid module name '{signal.module_name}'",
+            )
+
         venv_python = self.project_dir / ".venv" / "bin" / "python"
         python = str(venv_python) if venv_python.exists() else sys.executable
         try:
