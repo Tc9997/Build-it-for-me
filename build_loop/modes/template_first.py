@@ -479,7 +479,14 @@ class TemplateFirstOrchestrator:
     def _safe_write(self, relative_path: str, content: str) -> None:
         resolved = safe_output_path(self.output_dir, relative_path)
         if self._ownership_manifest:
-            check_write_allowed(self._ownership_manifest, relative_path)
+            owner = self._ownership_manifest.owner_of(relative_path)
+            if self._ownership_manifest.is_locked(relative_path):
+                if resolved.exists():
+                    # Template already placed this file — skip silently
+                    log("write", f"  skipped {relative_path} (template-locked, already exists)")
+                    return
+                # Locked path that doesn't exist yet — this is a real violation
+                check_write_allowed(self._ownership_manifest, relative_path)
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(content)
 
