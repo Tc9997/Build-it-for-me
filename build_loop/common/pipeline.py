@@ -192,7 +192,8 @@ def build_and_review(
 
     for attempt in range(MAX_REVIEW_REVISIONS):
         # Deterministic syntax screening before LLM review
-        syntax_issues = _screen_syntax(artifact)
+        # Pass known project module paths so cross-module imports aren't flagged
+        syntax_issues = _screen_syntax(artifact, _collect_known_modules(plan, state))
         if syntax_issues:
             log("pipeline", f"{module.id}: syntax issues found, requesting revision")
             module.status = TaskStatus.REVISION
@@ -243,24 +244,97 @@ def build_and_review(
     raise ModuleRejectedError(module.id, last_review)
 
 
-def _screen_syntax(artifact: BuildArtifact) -> list[str]:
+def _screen_syntax(
+    artifact: BuildArtifact,
+    known_project_modules: frozenset[str] | None = None,
+) -> list[str]:
     """Cheap deterministic screening on builder output.
 
     Checks:
     1. AST parse errors (syntax)
-    2. Unresolved internal imports (project modules that don't exist)
+    2. Unresolved internal imports (project modules that don't exist
+       in this artifact OR in the broader project)
 
-    Returns a list of issue descriptions, or empty if clean.
+    known_project_modules: module paths from other built artifacts and
+    the plan's file structure. Prevents false positives on cross-module
+    imports within the same project.
     """
     exports = analyze_artifact(artifact)
     issues = []
     if not exports.syntax_valid:
         issues.extend(f"Syntax error: {e}" for e in exports.parse_errors)
-    if exports.unresolved_imports:
-        issues.extend(
-            f"Unresolved import: {imp}" for imp in exports.unresolved_imports
-        )
+
+    # Filter unresolved imports against known project modules
+    if exports.unresolved_imports and known_project_modules:
+        truly_unresolved = []
+        for imp in exports.unresolved_imports:
+            # Extract module path from import statement
+            if imp.startswith("from "):
+                module_path = imp.split(" ")[1]
+            elif imp.startswith("import "):
+                module_path = imp.split(" ")[1].split(",")[0].strip()
+            else:
+                truly_unresolved.append(imp)
+                continue
+
+            # Check if any prefix of the module path is in known modules
+            parts = module_path.split(".")
+            found = False
+            for i in range(len(parts), 0, -1):
+                if ".".join(parts[:i]) in known_project_modules:
+                    found = True
+                    break
+            if not found:
+                truly_unresolved.append(imp)
+
+        if truly_unresolved:
+            issues.extend(f"Unresolved import: {imp}" for imp in truly_unresolved)
+    elif exports.unresolved_imports:
+        # No known modules — report all unresolved
+        issues.extend(f"Unresolved import: {imp}" for imp in exports.unresolved_imports)
+
     return issues
+
+
+def _collect_known_modules(plan: BuildPlan, state: BuildState) -> frozenset[str]:
+    """Collect all known module paths from the plan and already-built artifacts.
+
+    This allows the syntax screener to recognize cross-module imports within
+    the same project as valid.
+    """
+    modules = set()
+
+    # From plan's file structure — all planned file paths
+    if plan:
+        for mod_spec in plan.modules:
+            for path in mod_spec.file_paths:
+                if path.endswith(".py"):
+                    parts = path.replace("/", ".").removesuffix(".py").split(".")
+                    for i in range(len(parts)):
+                        modules.add(".".join(parts[:i + 1]))
+                    if parts[-1] == "__init__":
+                        modules.add(".".join(parts[:-1]))
+
+    # From already-built artifacts
+    for artifact in state.artifacts.values():
+        for path in list(artifact.files.keys()) + list(artifact.tests.keys()):
+            if path.endswith(".py"):
+                parts = path.replace("/", ".").removesuffix(".py").split(".")
+                for i in range(len(parts)):
+                    modules.add(".".join(parts[:i + 1]))
+                if parts[-1] == "__init__":
+                    modules.add(".".join(parts[:-1]))
+
+    # From plan's directory structure (often contains package names)
+    if plan and plan.directory_structure:
+        for line in plan.directory_structure.split("\n"):
+            line = line.strip().strip("├─│└ ")
+            if line.endswith("/"):
+                pkg = line.rstrip("/").replace("/", ".")
+                if pkg:
+                    modules.add(pkg)
+
+    return frozenset(modules)
 
 
 def write_project(
@@ -367,7 +441,15 @@ def optimize(
     test_results = [r for r in state.exec_history if r.success and ("test" in r.command.lower() or "pytest" in r.command.lower())]
     test_result = test_results[-1] if test_results else None
 
-    result = optimizer.run(plan=plan, project_files=project_files, test_result=test_result)
+    # Budget project files for optimizer context
+    from build_loop.agents.debugger import _budget_project_files
+    budgeted_files = _budget_project_files(project_files)
+
+    try:
+        result = optimizer.run(plan=plan, project_files=budgeted_files, test_result=test_result)
+    except Exception as e:
+        console.print(f"  [yellow]Optimizer failed: {e} — skipping optimization[/yellow]")
+        return
 
     file_changes = result.get("file_changes", {})
     if not file_changes:
@@ -381,7 +463,11 @@ def optimize(
         log("optimizer", f"  optimized {path}")
 
     for dep in result.get("new_dependencies", []):
-        r = executor.run_command(venv_cmd_fn(f"pip install {dep}"))
+        # Strip version specifiers (>=, <=, etc.) to avoid shell metachar rejection.
+        # pip install gets the latest; requirements.txt has the real constraints.
+        import re
+        pkg_name = re.split(r"[><=!~\[]", dep)[0].strip()
+        r = executor.run_command(venv_cmd_fn(f"pip install {pkg_name}"))
         state.exec_history.append(r)
 
     console.print("\n  [bold]Re-running tests after optimization...[/bold]")
