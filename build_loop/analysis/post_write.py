@@ -53,7 +53,10 @@ def run_post_write_checks(
     else:
         result.checks.append("pyproject.toml: not present (ok for some projects)")
 
-    # 3. Archetype-specific checks
+    # 3. Detect scaffold stubs that survived into final output
+    _check_surviving_scaffolds(out, result)
+
+    # 4. Archetype-specific checks
     if archetype == "python_cli":
         _check_python_cli(out, result)
     elif archetype == "fastapi_service":
@@ -89,9 +92,12 @@ def _check_entry_point(out: Path, name: str, target: str, result: PostWriteResul
     pkg_init = file_path / "__init__.py"
 
     if py_file.exists():
-        # Check the function exists in the file
         content = py_file.read_text()
-        if f"def {func_name}" in content:
+        if "# TODO" in content and len(content) < 500:
+            result.errors.append(
+                f"Entry point '{name}': {py_file.relative_to(out)} is a scaffold stub with TODO"
+            )
+        elif f"def {func_name}" in content:
             result.checks.append(f"Entry point '{name}': {target} — found")
         else:
             result.errors.append(
@@ -159,3 +165,28 @@ def _check_package_import(venv_python: Path, package_name: str, result: PostWrit
             result.errors.append(f"Package '{package_name}' import failed: {proc.stderr[-200:]}")
     except Exception as e:
         result.errors.append(f"Package '{package_name}' import check failed: {e}")
+
+
+def _check_surviving_scaffolds(out: Path, result: PostWriteResult) -> None:
+    """Detect template scaffold stubs that weren't overwritten by builders.
+
+    Scaffold files are short (.py < 500 chars) with TODO comments,
+    placeholder text like '{{project_name}}', or 'builder fills in'.
+    """
+    SCAFFOLD_MARKERS = ["# TODO", "{{project_name}}", "{{summary}}", "builder fills in", "builder adds"]
+    for py_file in out.rglob("*.py"):
+        if any(skip in str(py_file) for skip in [".venv", "__pycache__", ".build_state"]):
+            continue
+        try:
+            content = py_file.read_text()
+        except Exception:
+            continue
+        if len(content) > 500:
+            continue
+        for marker in SCAFFOLD_MARKERS:
+            if marker in content:
+                rel = str(py_file.relative_to(out))
+                result.errors.append(
+                    f"Scaffold stub survived: {rel} contains '{marker}'"
+                )
+                break

@@ -2,10 +2,6 @@
   "pyproject.toml": "builder_owned",
   ".gitignore": "template_locked",
   "requirements.txt": "builder_owned",
-  "src/__init__.py": "template_locked",
-  "src/app.py": "template_locked",
-  "src/routes.py": "builder_owned",
-  "src/models.py": "builder_owned",
   "tests/__init__.py": "template_locked",
   "tests/conftest.py": "template_locked"
 }

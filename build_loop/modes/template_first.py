@@ -264,8 +264,11 @@ class TemplateFirstOrchestrator:
 
             # Phase 8: Integrate
             phase("8", "INTEGRATE", "Wiring modules together...")
+            template_files = sorted(self._ownership_manifest.files.keys()) if self._ownership_manifest else None
             self.state.integration = self.integrator.run(
-                self.state.plan, self.state.artifacts
+                self.state.plan, self.state.artifacts,
+                template_files=template_files,
+                export_metadata=self.state.module_exports or None,
             )
             save_state(self.state, self.output_dir)
             if not self.state.integration.success:

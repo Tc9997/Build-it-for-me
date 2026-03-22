@@ -34,6 +34,10 @@ Rules:
 - Import shared types from wherever the interface contract says they live.
 - When DEPENDENCY CONTEXT is provided, use the ACTUAL export names and file paths \
   from already-built dependencies — do NOT guess or invent symbol names.
+- If you produce a CLI module, also update pyproject.toml [project.scripts] to point \
+  at YOUR actual CLI module (e.g. "mypackage.cli:main"), not a placeholder.
+- Do NOT create files under src/ — use the package name as the directory (e.g. agent_protocol/).
+- README examples must use the ACTUAL field names from your models.
 - Write real, runnable code. No stubs, no TODOs, no placeholders.
 - Write tests that verify the module satisfies its interface contract.
 - Keep dependencies minimal. Only import what's in the tech stack.
