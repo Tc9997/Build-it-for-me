@@ -229,11 +229,57 @@ def fetch_github_file(repo: str, path: str) -> str:
 # Generic URL fetching
 # ---------------------------------------------------------------------------
 
+def _is_blocked_host(url: str) -> str | None:
+    """Check if a URL targets a blocked host. Returns reason or None."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+    except Exception:
+        return "Malformed URL"
+
+    if not host:
+        return "No hostname in URL"
+
+    # Reject localhost and loopback
+    if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        return f"Blocked: localhost/loopback ({host})"
+
+    # Reject link-local
+    if host.startswith("169.254."):
+        return f"Blocked: link-local address ({host})"
+
+    # Reject private RFC1918 ranges
+    if host.startswith("10."):
+        return f"Blocked: private network ({host})"
+    if host.startswith("192.168."):
+        return f"Blocked: private network ({host})"
+    if host.startswith("172."):
+        try:
+            second = int(host.split(".")[1])
+            if 16 <= second <= 31:
+                return f"Blocked: private network ({host})"
+        except (ValueError, IndexError):
+            pass
+
+    return None
+
+
 def fetch_url(url: str, max_chars: int = 30000) -> FetchedPage:
-    """Fetch a URL and return its text content. Only HTTP/HTTPS allowed."""
-    # Reject non-HTTP schemes (file://, ftp://, gopher://, etc.)
+    """Fetch a URL and return its text content.
+
+    Only http/https allowed. Rejects file://, ftp://, localhost,
+    loopback, link-local, and private RFC1918 targets.
+    """
+    # Reject non-HTTP schemes
     if not (url.startswith("http://") or url.startswith("https://")):
         return FetchedPage(url=url, content=f"Rejected: only http/https URLs are allowed, got: {url}")
+
+    # Reject blocked hosts (SSRF protection)
+    blocked = _is_blocked_host(url)
+    if blocked:
+        return FetchedPage(url=url, content=f"Rejected: {blocked}")
+
     try:
         proc = subprocess.run(
             ["curl", "-sL", "-A", "Mozilla/5.0", "--max-time", "15", url],
