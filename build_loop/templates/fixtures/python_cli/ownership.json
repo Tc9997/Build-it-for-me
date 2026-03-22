@@ -1,5 +1,5 @@
 {
-  "pyproject.toml": "template_locked",
+  "pyproject.toml": "builder_owned",
   ".gitignore": "template_locked",
   "requirements.txt": "builder_owned",
   "src/__init__.py": "template_locked",

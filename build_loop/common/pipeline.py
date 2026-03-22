@@ -227,6 +227,19 @@ def build_and_review(
             dependency_exports=dependency_exports or {},
         )
 
+    # If all rounds were syntax failures, last_review is None.
+    # Create a synthetic rejection review from the last syntax feedback.
+    if last_review is None:
+        reviews = state.reviews.get(module.id, [])
+        if reviews:
+            last_review = reviews[-1]
+        else:
+            last_review = ReviewResult(
+                module_id=module.id,
+                verdict=ReviewVerdict.REVISE,
+                issues=["Module exhausted all revision rounds without passing syntax checks"],
+            )
+
     raise ModuleRejectedError(module.id, last_review)
 
 

@@ -44,7 +44,23 @@ def call_json(
     temperature: float = 0.0,
 ) -> dict:
     """Send a message and parse the response as JSON."""
-    raw = call(system, messages, model=model, max_tokens=max_tokens, temperature=temperature)
+    resp = get_client().messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        system=system,
+        messages=messages,
+    )
+    raw = resp.content[0].text
+
+    # Detect truncated output (hit max_tokens)
+    if resp.stop_reason == "max_tokens":
+        raise RuntimeError(
+            f"LLM response truncated at {max_tokens} tokens (stop_reason=max_tokens). "
+            f"Output is incomplete and cannot be parsed as JSON. "
+            f"Last 100 chars: ...{raw[-100:]}"
+        )
+
     # Strip markdown code fences if present
     text = raw.strip()
     if text.startswith("```"):
