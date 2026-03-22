@@ -1,6 +1,6 @@
 # Build-it-for-me
 
-Autonomous multi-agent build system that turns plain English ideas into tested, working code.
+Multi-agent build system for scaffolding Python CLI tools and FastAPI services from plain English descriptions. Template-first mode produces tested, ownership-tracked projects for two supported archetypes. Freeform mode is experimental and best-effort.
 
 ## Two modes
 

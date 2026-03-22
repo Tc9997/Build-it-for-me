@@ -42,8 +42,9 @@ Rules:
   sensible defaults.
 - If the error suggests a fundamental design flaw, say so in diagnosis — but still provide \
   the best fix you can.
-- Do NOT modify template-locked files (pyproject.toml, .gitignore, conftest.py). \
-  Only modify builder-owned and generated files.
+- Do NOT modify template-locked files (.gitignore, tests/conftest.py). \
+  Only modify builder-owned and generated files. \
+  pyproject.toml and requirements.txt ARE builder-owned — you CAN modify them.
 - Respond with ONLY the JSON object, no markdown fences, no commentary.
 """
 
