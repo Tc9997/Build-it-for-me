@@ -1,0 +1,20 @@
+{
+  "id": "fastapi_service_03",
+  "name": "Pastebin service",
+  "archetype": "fastapi_service",
+  "idea": "A simple pastebin REST API. POST /pastes with raw text body, returns a JSON response with an auto-generated short ID and URL. GET /pastes/{id} returns the paste content as plain text. GET /pastes/{id}/meta returns JSON metadata (created_at, size, content_type). Store in memory. Include /health.",
+  "expected_signals": [
+    {
+      "type": "file_exists",
+      "description": "App exists",
+      "file_path": "src/app.py"
+    },
+    {
+      "type": "file_exists",
+      "description": "Routes exist",
+      "file_path": "src/routes.py"
+    }
+  ],
+  "difficulty": "easy",
+  "tags": ["rest", "crud", "in-memory"]
+}

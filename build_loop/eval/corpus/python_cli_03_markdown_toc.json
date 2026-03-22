@@ -1,0 +1,22 @@
+{
+  "id": "python_cli_03",
+  "name": "Markdown TOC generator",
+  "archetype": "python_cli",
+  "idea": "A CLI tool that reads a Markdown file and generates a table of contents from its headings. Outputs the TOC as Markdown with proper indentation and anchor links. Supports --max-depth to limit heading levels included. Writes to stdout by default, --inplace to insert the TOC at a <!-- TOC --> marker in the original file.",
+  "expected_signals": [
+    {
+      "type": "cli_exit",
+      "description": "Help text works",
+      "command": "python",
+      "args": ["src/cli.py", "--help"],
+      "expect_exit": 0
+    },
+    {
+      "type": "file_exists",
+      "description": "Core logic exists",
+      "file_path": "src/core.py"
+    }
+  ],
+  "difficulty": "medium",
+  "tags": ["parsing", "cli", "text-processing"]
+}

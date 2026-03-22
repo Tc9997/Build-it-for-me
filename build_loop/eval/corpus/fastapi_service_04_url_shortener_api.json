@@ -1,0 +1,25 @@
+{
+  "id": "fastapi_service_04",
+  "name": "URL shortener API",
+  "archetype": "fastapi_service",
+  "idea": "A URL shortener REST API. POST /shorten with {\"url\": \"...\"} body, returns {\"short_code\": \"...\", \"short_url\": \"...\"}. GET /r/{code} redirects (302) to the original URL. GET /stats/{code} returns JSON with click count and original URL. Store in memory. Include /health.",
+  "expected_signals": [
+    {
+      "type": "file_exists",
+      "description": "App exists",
+      "file_path": "src/app.py"
+    },
+    {
+      "type": "file_exists",
+      "description": "Routes exist",
+      "file_path": "src/routes.py"
+    },
+    {
+      "type": "file_exists",
+      "description": "Models exist",
+      "file_path": "src/models.py"
+    }
+  ],
+  "difficulty": "medium",
+  "tags": ["rest", "redirect", "in-memory"]
+}

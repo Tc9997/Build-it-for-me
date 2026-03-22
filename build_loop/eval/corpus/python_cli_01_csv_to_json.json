@@ -1,0 +1,27 @@
+{
+  "id": "python_cli_01",
+  "name": "CSV to JSON converter",
+  "archetype": "python_cli",
+  "idea": "A CLI tool that reads a CSV file and outputs JSON. Supports --delimiter to set the CSV delimiter (default comma), --pretty for indented output, and --output to write to a file instead of stdout. Reads from a file path argument or stdin.",
+  "expected_signals": [
+    {
+      "type": "cli_exit",
+      "description": "Script runs with --help",
+      "command": "python",
+      "args": ["src/cli.py", "--help"],
+      "expect_exit": 0
+    },
+    {
+      "type": "file_exists",
+      "description": "Entry point exists",
+      "file_path": "src/cli.py"
+    },
+    {
+      "type": "file_exists",
+      "description": "Core logic exists",
+      "file_path": "src/core.py"
+    }
+  ],
+  "difficulty": "easy",
+  "tags": ["file-io", "cli", "parsing"]
+}

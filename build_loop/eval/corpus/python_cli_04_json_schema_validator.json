@@ -1,0 +1,22 @@
+{
+  "id": "python_cli_04",
+  "name": "JSON schema validator",
+  "archetype": "python_cli",
+  "idea": "A CLI tool that validates JSON files against a JSON Schema. Takes two arguments: the data file and the schema file. Prints validation errors with line context if the data is invalid. Exits 0 on valid, 1 on invalid, 2 on error. Supports --quiet to suppress output on success.",
+  "expected_signals": [
+    {
+      "type": "cli_exit",
+      "description": "Help text works",
+      "command": "python",
+      "args": ["src/cli.py", "--help"],
+      "expect_exit": 0
+    },
+    {
+      "type": "file_exists",
+      "description": "Entry point exists",
+      "file_path": "src/cli.py"
+    }
+  ],
+  "difficulty": "medium",
+  "tags": ["validation", "cli", "json"]
+}

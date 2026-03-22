@@ -1,0 +1,20 @@
+{
+  "id": "fastapi_service_05",
+  "name": "Key-value store API",
+  "archetype": "fastapi_service",
+  "idea": "A simple key-value store REST API. PUT /kv/{key} with JSON body {\"value\": ...} to set a key. GET /kv/{key} to retrieve. DELETE /kv/{key} to remove. GET /kv to list all keys. Support optional TTL via ?ttl=seconds on PUT (expired keys return 404). Store in memory. Include /health.",
+  "expected_signals": [
+    {
+      "type": "file_exists",
+      "description": "App exists",
+      "file_path": "src/app.py"
+    },
+    {
+      "type": "file_exists",
+      "description": "Routes exist",
+      "file_path": "src/routes.py"
+    }
+  ],
+  "difficulty": "medium",
+  "tags": ["rest", "crud", "in-memory", "ttl"]
+}

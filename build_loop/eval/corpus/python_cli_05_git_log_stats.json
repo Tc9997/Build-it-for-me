@@ -1,0 +1,22 @@
+{
+  "id": "python_cli_05",
+  "name": "Git log statistics",
+  "archetype": "python_cli",
+  "idea": "A CLI tool that analyzes a local git repository and prints commit statistics. Shows: total commits, commits per author, most active day of week, average commits per week. Takes an optional --since flag for date filtering. Reads from current directory by default, or a --repo path argument.",
+  "expected_signals": [
+    {
+      "type": "cli_exit",
+      "description": "Help text works",
+      "command": "python",
+      "args": ["src/cli.py", "--help"],
+      "expect_exit": 0
+    },
+    {
+      "type": "file_exists",
+      "description": "Entry point exists",
+      "file_path": "src/cli.py"
+    }
+  ],
+  "difficulty": "medium",
+  "tags": ["git", "cli", "analytics"]
+}

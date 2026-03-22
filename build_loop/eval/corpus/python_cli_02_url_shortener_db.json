@@ -1,0 +1,27 @@
+{
+  "id": "python_cli_02",
+  "name": "URL shortener with SQLite",
+  "archetype": "python_cli",
+  "idea": "A CLI tool for shortening URLs. Stores mappings in a local SQLite database. Commands: 'shorten <url>' to create a short code and print it, 'resolve <code>' to look up and print the original URL, 'list' to show all stored mappings. Uses a random 6-character alphanumeric code.",
+  "expected_signals": [
+    {
+      "type": "cli_exit",
+      "description": "Help text works",
+      "command": "python",
+      "args": ["src/cli.py", "--help"],
+      "expect_exit": 0
+    },
+    {
+      "type": "file_exists",
+      "description": "Entry point exists",
+      "file_path": "src/cli.py"
+    },
+    {
+      "type": "import_check",
+      "description": "sqlite3 is available",
+      "module_name": "sqlite3"
+    }
+  ],
+  "difficulty": "medium",
+  "tags": ["database", "cli", "crud"]
+}

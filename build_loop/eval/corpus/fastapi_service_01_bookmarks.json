@@ -1,0 +1,30 @@
+{
+  "id": "fastapi_service_01",
+  "name": "Bookmarks API",
+  "archetype": "fastapi_service",
+  "idea": "A REST API for managing bookmarks. Endpoints: POST /bookmarks to create (title, url, optional tags), GET /bookmarks to list all with optional ?tag= filter, GET /bookmarks/{id} to get one, DELETE /bookmarks/{id} to remove. Store in memory (dict). Include /health endpoint.",
+  "expected_signals": [
+    {
+      "type": "file_exists",
+      "description": "App module exists",
+      "file_path": "src/app.py"
+    },
+    {
+      "type": "file_exists",
+      "description": "Routes module exists",
+      "file_path": "src/routes.py"
+    },
+    {
+      "type": "file_exists",
+      "description": "Models module exists",
+      "file_path": "src/models.py"
+    },
+    {
+      "type": "import_check",
+      "description": "fastapi importable",
+      "module_name": "fastapi"
+    }
+  ],
+  "difficulty": "easy",
+  "tags": ["rest", "crud", "in-memory"]
+}
