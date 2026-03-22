@@ -112,6 +112,9 @@ class TemplateFirstOrchestrator:
         if not state_path.exists():
             raise PipelineError(f"No saved state at {state_path}")
 
+        from build_loop.llm import reset_cost_tracking
+        reset_cost_tracking()
+
         self.state = BuildState.model_validate_json(state_path.read_text())
         console.print(f"[bold]Resuming from phase: {from_phase}[/bold]")
 
@@ -187,6 +190,8 @@ class TemplateFirstOrchestrator:
 
     def run(self, idea: str) -> str:
         """Run the full template-first pipeline. Returns the output directory."""
+        from build_loop.llm import reset_cost_tracking
+        reset_cost_tracking()
         self.state.idea = idea
         console.print(Panel(
             f"[bold]MODE: template_first[/bold]\n{idea}",

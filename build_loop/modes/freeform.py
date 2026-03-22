@@ -76,6 +76,8 @@ class FreeformOrchestrator:
 
     def run(self, idea: str) -> str:
         """Run the freeform pipeline. Returns the output directory."""
+        from build_loop.llm import reset_cost_tracking
+        reset_cost_tracking()
         self.state.idea = idea
         console.print(Panel(
             f"[bold yellow]MODE: freeform (experimental)[/bold yellow]\n{idea}",
