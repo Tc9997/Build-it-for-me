@@ -1,19 +1,22 @@
-"""Eval runner: executes tasks in both modes and captures structured results.
+"""Eval runner: executes tasks in both modes and scores against corpus signals.
 
-Each task gets its own isolated output directory. The runner captures
-wall time, pipeline completion, verification results, and per-signal
-pass/fail. No LLM judgment in the eval — only deterministic checks.
+Pass/fail is determined by the eval harness's own expected_signals, NOT by
+the build system's internal verifier or acceptance agent. Both modes are
+scored by the same benchmark assertions — no mode has a structural advantage.
+
+The build system's self-reported results (verification, acceptance) are
+recorded for analysis but do not determine the eval outcome.
 """
 
 from __future__ import annotations
 
-import json
 import shutil
 import time
 from pathlib import Path
 
 from rich.console import Console
 
+from build_loop.eval.eval_verify import eval_verify
 from build_loop.eval.models import EvalRunResult, EvalSuiteResult, EvalTask
 from build_loop.modes import BuildMode
 
@@ -21,9 +24,9 @@ console = Console()
 
 
 def run_task(task: EvalTask, mode: BuildMode, output_base: Path) -> EvalRunResult:
-    """Run a single eval task in the specified mode.
+    """Run a single eval task and score against the corpus's expected_signals.
 
-    Returns a structured result regardless of success or failure.
+    Pass/fail is determined by eval_verify, not by the build system.
     """
     task_dir = output_base / f"{task.id}_{mode.value}"
     if task_dir.exists():
@@ -35,7 +38,6 @@ def run_task(task: EvalTask, mode: BuildMode, output_base: Path) -> EvalRunResul
         task_name=task.name,
         archetype=task.archetype,
         mode=mode.value,
-        passed=False,
     )
 
     console.print(f"\n[bold]Running {task.id} ({task.name}) in {mode.value}...[/bold]")
@@ -46,36 +48,57 @@ def run_task(task: EvalTask, mode: BuildMode, output_base: Path) -> EvalRunResul
         agent = ArchitectAgent(output_dir=str(task_dir), mode=mode)
         agent.run(task.idea)
 
-        result.pipeline_completed = True
-
-        # Extract results from state
+        # Extract self-reported results for analysis (not for scoring)
         state = agent.state
         result.debug_rounds = state.debug_rounds
 
         if state.acceptance:
-            result.acceptance_verdict = state.acceptance.verdict.value if hasattr(state.acceptance.verdict, 'value') else str(state.acceptance.verdict)
+            result.acceptance_verdict = (
+                state.acceptance.verdict.value
+                if hasattr(state.acceptance.verdict, "value")
+                else str(state.acceptance.verdict)
+            )
 
         if state.verification:
-            # Verification is stored as dict
             v = state.verification
-            result.verification_passed = v.get("tier1_passed", False) and v.get("tier2_passed", False)
-            for sr in v.get("tier1_results", []) + v.get("tier2_results", []):
-                result.signal_results.append(sr)
+            result.verification_passed = (
+                v.get("tier1_passed", False) and v.get("tier2_passed", False)
+            )
 
-        # Determine pass: verification passed (if it ran) + acceptance not failed
-        if result.verification_passed is True:
-            result.passed = True
-        elif result.verification_passed is None:
-            # Verification didn't run (degraded?) — check acceptance
-            result.passed = result.acceptance_verdict == "pass"
+        # Check pipeline_completed by looking for terminal-phase evidence
+        # (acceptance ran, or at least write phase produced files)
+        result.pipeline_completed = (
+            state.acceptance is not None
+            or len(list(task_dir.rglob("*.py"))) > 0
+        )
 
     except Exception as e:
         result.error = f"{type(e).__name__}: {e}"
         console.print(f"  [red]Error: {result.error}[/red]")
 
     result.wall_time_seconds = round(time.monotonic() - start, 2)
+
+    # ---------------------------------------------------------------
+    # SCORING: eval-owned verification against corpus expected_signals
+    # This is the authority for pass/fail — same for both modes.
+    # ---------------------------------------------------------------
+    if task.expected_signals:
+        eval_signals = eval_verify(task, task_dir)
+        result.signal_results = eval_signals
+        result.passed = all(s["passed"] for s in eval_signals)
+    else:
+        # No corpus signals — fall back to "did the pipeline complete"
+        result.passed = result.pipeline_completed
+
     status = "[green]PASS[/green]" if result.passed else "[red]FAIL[/red]"
-    console.print(f"  {status} ({result.wall_time_seconds}s, {result.debug_rounds} debug rounds)")
+    signal_summary = ""
+    if result.signal_results:
+        sp = sum(1 for s in result.signal_results if s["passed"])
+        signal_summary = f", {sp}/{len(result.signal_results)} signals"
+    console.print(
+        f"  {status} ({result.wall_time_seconds}s, "
+        f"{result.debug_rounds} debug rounds{signal_summary})"
+    )
 
     return result
 

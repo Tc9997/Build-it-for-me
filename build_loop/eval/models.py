@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
 
@@ -19,19 +17,33 @@ class EvalTask(BaseModel):
 
 
 class EvalRunResult(BaseModel):
-    """Result of running a single eval task."""
+    """Result of running a single eval task.
+
+    passed is determined by eval_verify (corpus signals), NOT by the
+    build system's internal verifier or acceptance. Both modes are
+    scored identically.
+    """
     task_id: str
     task_name: str
     archetype: str
     mode: str  # "template_first" or "freeform"
+
+    # Eval-scored (the authority)
     passed: bool = False
+    signal_results: list[dict] = Field(
+        default_factory=list,
+        description="Results from eval_verify running corpus expected_signals"
+    )
+
+    # Pipeline metadata
     pipeline_completed: bool = False
-    verification_passed: bool | None = None
-    acceptance_verdict: str = ""
     debug_rounds: int = 0
-    signal_results: list[dict] = Field(default_factory=list)
     wall_time_seconds: float = 0.0
     error: str = ""
+
+    # Self-reported (for analysis, not scoring)
+    verification_passed: bool | None = None
+    acceptance_verdict: str = ""
 
 
 class EvalSuiteResult(BaseModel):

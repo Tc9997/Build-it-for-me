@@ -110,3 +110,100 @@ class TestEvalReporter:
         assert "timestamp" in data
         assert len(data["suites"]) == 1
         assert data["suites"][0]["pass_rate"] == 1.0
+
+
+class TestEvalVerify:
+    """eval_verify must score against corpus signals, not self-reported results."""
+
+    def test_file_exists_passes(self, tmp_path):
+        from build_loop.eval.eval_verify import eval_verify
+        (tmp_path / "src" / "cli.py").mkdir(parents=True, exist_ok=True)
+        # Create as file, not dir
+        import shutil
+        shutil.rmtree(tmp_path / "src" / "cli.py")
+        (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "cli.py").write_text("pass")
+
+        task = EvalTask(
+            id="t", name="t", archetype="python_cli", idea="test",
+            expected_signals=[
+                {"type": "file_exists", "description": "cli exists", "file_path": "src/cli.py"},
+            ],
+        )
+        results = eval_verify(task, tmp_path)
+        assert len(results) == 1
+        assert results[0]["passed"]
+
+    def test_file_exists_fails_when_missing(self, tmp_path):
+        from build_loop.eval.eval_verify import eval_verify
+        task = EvalTask(
+            id="t", name="t", archetype="python_cli", idea="test",
+            expected_signals=[
+                {"type": "file_exists", "description": "missing", "file_path": "src/nope.py"},
+            ],
+        )
+        results = eval_verify(task, tmp_path)
+        assert not results[0]["passed"]
+
+    def test_cli_exit_passes(self, tmp_path):
+        import sys
+        from build_loop.eval.eval_verify import eval_verify
+        (tmp_path / "ok.py").write_text("pass")
+
+        task = EvalTask(
+            id="t", name="t", archetype="python_cli", idea="test",
+            expected_signals=[
+                {"type": "cli_exit", "description": "runs", "command": sys.executable,
+                 "args": ["ok.py"], "expect_exit": 0},
+            ],
+        )
+        results = eval_verify(task, tmp_path)
+        assert results[0]["passed"]
+
+    def test_cli_exit_fails_on_wrong_exit(self, tmp_path):
+        import sys
+        from build_loop.eval.eval_verify import eval_verify
+        (tmp_path / "fail.py").write_text("raise SystemExit(1)")
+
+        task = EvalTask(
+            id="t", name="t", archetype="python_cli", idea="test",
+            expected_signals=[
+                {"type": "cli_exit", "description": "should exit 0", "command": sys.executable,
+                 "args": ["fail.py"], "expect_exit": 0},
+            ],
+        )
+        results = eval_verify(task, tmp_path)
+        assert not results[0]["passed"]
+
+    def test_all_signals_must_pass_for_task_pass(self, tmp_path):
+        """If any corpus signal fails, the task fails — even if others pass."""
+        from build_loop.eval.eval_verify import eval_verify
+        (tmp_path / "exists.py").write_text("pass")
+
+        task = EvalTask(
+            id="t", name="t", archetype="python_cli", idea="test",
+            expected_signals=[
+                {"type": "file_exists", "description": "exists", "file_path": "exists.py"},
+                {"type": "file_exists", "description": "missing", "file_path": "nope.py"},
+            ],
+        )
+        results = eval_verify(task, tmp_path)
+        assert results[0]["passed"]
+        assert not results[1]["passed"]
+        # The runner would score this as failed because not all signals pass
+        assert not all(s["passed"] for s in results)
+
+    def test_scoring_is_mode_independent(self, tmp_path):
+        """eval_verify does not know or care about the build mode."""
+        from build_loop.eval.eval_verify import eval_verify
+        (tmp_path / "file.py").write_text("pass")
+
+        task = EvalTask(
+            id="t", name="t", archetype="python_cli", idea="test",
+            expected_signals=[
+                {"type": "file_exists", "description": "check", "file_path": "file.py"},
+            ],
+        )
+        # Same output dir, same result regardless of what mode produced it
+        results = eval_verify(task, tmp_path)
+        assert results[0]["passed"]
