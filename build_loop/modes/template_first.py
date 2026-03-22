@@ -123,10 +123,13 @@ class TemplateFirstOrchestrator:
         self.state = BuildState.model_validate(raw_state)
         console.print(f"[bold]Resuming from phase: {from_phase}[/bold]")
 
-        # Reconstruct transient fields from persisted state
+        # Reconstruct ALL transient fields from persisted state
         if self.state.contract:
             self.contract = self.state.contract.data
-
+        if self.state.environment:
+            self.env_snapshot = self.state.environment.data
+        if self.state.policy:
+            self.policy_decision = self.state.policy.data
         if self.state.verification:
             from build_loop.verifier import VerificationResult
             self._verification_result = VerificationResult(**self.state.verification)
@@ -135,7 +138,6 @@ class TemplateFirstOrchestrator:
         from build_loop.templates.materialize import MANIFEST_FILENAME
         manifest_path = Path(self.output_dir) / MANIFEST_FILENAME
         if manifest_path.exists():
-            import json as _json
             self._ownership_manifest = OwnershipManifest.model_validate_json(
                 manifest_path.read_text()
             )
@@ -160,33 +162,47 @@ class TemplateFirstOrchestrator:
                     raise PipelineError(f"Post-write checks failed: {pw_result.errors}")
                 from_phase = "setup"
 
-            if from_phase == "setup":
-                phase("10", "SETUP", "Installing dependencies...")
-                setup_environment(self.state, self.executor, self._venv_cmd)
-                save_state(self.state, self.output_dir)
+            # Same gates as run()
+            self._checkpoint_gate("setup")
 
-                from build_loop.analysis.post_write import run_post_setup_checks
-                ps_result = run_post_setup_checks(self.output_dir)
-                for check in ps_result.checks:
-                    console.print(f"  [green]{check}[/green]")
-                for err in ps_result.errors:
-                    console.print(f"  [bold red]{err}[/bold red]")
+            if from_phase == "setup":
+                if not self._should_skip("setup"):
+                    phase("10", "SETUP", "Installing dependencies...")
+                    setup_environment(self.state, self.executor, self._venv_cmd)
+                    save_state(self.state, self.output_dir)
+
+                    from build_loop.analysis.post_write import run_post_setup_checks
+                    ps_result = run_post_setup_checks(self.output_dir)
+                    for check in ps_result.checks:
+                        console.print(f"  [green]{check}[/green]")
+                    for err in ps_result.errors:
+                        console.print(f"  [bold red]{err}[/bold red]")
+                else:
+                    phase("10", "SETUP", "[SKIPPED — degraded mode]")
                 from_phase = "test"
 
             if from_phase == "test":
-                phase("11", "TEST & DEBUG", "Running tests and fixing failures...")
-                test_and_debug_loop(
-                    self.state, self.executor, self.debugger,
-                    self._venv_cmd, self._safe_write, self._read_files,
-                )
-                save_state(self.state, self.output_dir)
+                if not self._should_skip("test"):
+                    phase("11", "TEST & DEBUG", "Running tests and fixing failures...")
+                    test_and_debug_loop(
+                        self.state, self.executor, self.debugger,
+                        self._venv_cmd, self._safe_write, self._read_files,
+                    )
+                    save_state(self.state, self.output_dir)
+                else:
+                    phase("11", "TEST & DEBUG", "[SKIPPED — degraded mode]")
                 from_phase = "verify"
 
             if from_phase == "verify":
-                phase("12", "VERIFY", "Independent verification...")
-                self._verify()
-                save_state(self.state, self.output_dir)
+                if not self._should_skip("verify"):
+                    phase("12", "VERIFY", "Independent verification...")
+                    self._verify()
+                    save_state(self.state, self.output_dir)
+                else:
+                    phase("12", "VERIFY", "[SKIPPED — degraded mode]")
                 from_phase = "accept"
+
+            self._checkpoint_gate("acceptance")
 
             if from_phase == "accept":
                 phase("14", "ACCEPTANCE", "Final acceptance...")

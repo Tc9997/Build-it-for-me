@@ -17,3 +17,6 @@ test = [
 
 [project.scripts]
 build-loop = "build_loop.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

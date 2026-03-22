@@ -43,14 +43,25 @@ def _load_pinned_hashes() -> dict[str, str]:
         raise RegistryError(f"Malformed pinned_hashes.json: {e}")
 
 
+_HASH_SKIP = {"__pycache__", ".pyc", ".pyo", ".DS_Store"}
+
+
 def _compute_content_hash(directory: Path) -> str:
-    """SHA-256 of all file contents in a directory, sorted by path."""
+    """SHA-256 of all file contents in a directory, sorted by path.
+
+    Excludes __pycache__, .pyc, .pyo, and .DS_Store to prevent
+    transient cache files from invalidating pinned hashes.
+    """
     h = hashlib.sha256()
     for p in sorted(directory.rglob("*")):
-        if p.is_file():
-            rel = str(p.relative_to(directory))
-            h.update(rel.encode())
-            h.update(p.read_bytes())
+        if not p.is_file():
+            continue
+        # Skip transient/cache files
+        if any(skip in str(p) for skip in _HASH_SKIP):
+            continue
+        rel = str(p.relative_to(directory))
+        h.update(rel.encode())
+        h.update(p.read_bytes())
     return h.hexdigest()
 
 

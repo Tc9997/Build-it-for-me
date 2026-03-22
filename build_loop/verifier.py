@@ -42,7 +42,7 @@ from build_loop.contract import (
     SchemaValidSignal,
     StdoutContainsSignal,
 )
-from build_loop.safety import safe_command, UnsafeCommandError
+from build_loop.safety import PathTraversalError, safe_command, safe_output_path, UnsafeCommandError
 from build_loop.schemas import ExecResult
 
 console = Console()
@@ -265,34 +265,77 @@ class Verifier:
 
     @staticmethod
     def _normalize_argv(command: str, args: list[str]) -> list[str]:
-        """Normalize a command + args into a proper argv list.
-
-        If command contains spaces and args is empty, the spec compiler
-        likely serialized a shell-style command string. Split it with
-        shlex to get a proper argv.
-        """
+        """Normalize a command + args into a proper argv list."""
         if " " in command and not args:
             return shlex.split(command)
         return [command] + args
 
-    def _check_cli_exit(self, signal: CliExitSignal) -> SignalResult:
-        """Run a command and check exit code."""
-        argv = self._normalize_argv(signal.command, signal.args)
+    def _safe_execute(self, command: str, args: list[str], description: str, timeout: int = 60) -> tuple[subprocess.CompletedProcess | None, str | None]:
+        """Validate and execute a command safely. Returns (proc, error_detail).
+
+        Rejects:
+        - Absolute paths as command (except .venv/bin/ executables)
+        - python -c (arbitrary code execution)
+        - python -m pip (package manipulation)
+        - Non-python/non-venv executables
+
+        Allows:
+        - python -m <project_module>
+        - python <project-relative-script.py>
+        - .venv/bin/<tool> (installed entry points)
+        """
+        argv = self._normalize_argv(command, args)
+        if not argv:
+            return None, "Empty command"
+
+        executable = argv[0]
+        venv_bin = self.project_dir / ".venv" / "bin"
+
+        # Allow .venv/bin/ executables (installed entry points)
+        if str(executable).startswith(str(venv_bin)):
+            pass  # Trusted — installed by pip into project venv
+        elif executable in ("python", "python3") or executable == sys.executable:
+            # Validate python subcommands
+            if len(argv) > 1:
+                flag = argv[1]
+                if flag == "-c":
+                    return None, "Rejected: python -c is not allowed (arbitrary code execution)"
+                if flag == "-m" and len(argv) > 2 and argv[2] == "pip":
+                    return None, "Rejected: python -m pip is not allowed in verifier"
+                if flag == "-m":
+                    pass  # python -m <module> is ok
+                elif flag.startswith("/"):
+                    return None, f"Rejected: absolute script path {flag}"
+                # else: python <relative-script.py> — ok
+        elif executable.startswith("/"):
+            return None, f"Rejected: absolute executable path {executable}"
+        else:
+            return None, f"Rejected: unknown executable {executable}. Only python and .venv/bin/ tools are allowed."
+
         try:
             proc = subprocess.run(
                 argv, cwd=str(self.project_dir),
-                capture_output=True, text=True, timeout=60,
+                capture_output=True, text=True, timeout=timeout,
             )
-            passed = proc.returncode == signal.expect_exit
-            detail = "" if passed else (
-                f"Expected exit {signal.expect_exit}, got {proc.returncode}. "
-                f"stderr: {proc.stderr[-500:]}"
-            )
+            return proc, None
         except FileNotFoundError:
-            passed, detail = False, f"Command not found: {signal.command}"
+            return None, f"Command not found: {executable}"
         except subprocess.TimeoutExpired:
-            passed, detail = False, "Command timed out"
+            return None, "Command timed out"
 
+    def _check_cli_exit(self, signal: CliExitSignal) -> SignalResult:
+        """Run a command and check exit code."""
+        proc, error = self._safe_execute(signal.command, signal.args, signal.description)
+        if error:
+            return SignalResult(
+                signal_type="cli_exit", description=signal.description,
+                passed=False, detail=error,
+            )
+        passed = proc.returncode == signal.expect_exit
+        detail = "" if passed else (
+            f"Expected exit {signal.expect_exit}, got {proc.returncode}. "
+            f"stderr: {proc.stderr[-500:]}"
+        )
         return SignalResult(
             signal_type="cli_exit", description=signal.description,
             passed=passed, detail=detail,
@@ -300,22 +343,17 @@ class Verifier:
 
     def _check_stdout_contains(self, signal: StdoutContainsSignal) -> SignalResult:
         """Run a command and check stdout contains expected string."""
-        argv = self._normalize_argv(signal.command, signal.args)
-        try:
-            proc = subprocess.run(
-                argv, cwd=str(self.project_dir),
-                capture_output=True, text=True, timeout=60,
+        proc, error = self._safe_execute(signal.command, signal.args, signal.description)
+        if error:
+            return SignalResult(
+                signal_type="stdout_contains", description=signal.description,
+                passed=False, detail=error,
             )
-            passed = signal.expect_contains in proc.stdout
-            detail = "" if passed else (
-                f"Expected stdout to contain '{signal.expect_contains}'. "
-                f"Got: {proc.stdout[-500:]}"
-            )
-        except FileNotFoundError:
-            passed, detail = False, f"Command not found: {signal.command}"
-        except subprocess.TimeoutExpired:
-            passed, detail = False, "Command timed out"
-
+        passed = signal.expect_contains in proc.stdout
+        detail = "" if passed else (
+            f"Expected stdout to contain '{signal.expect_contains}'. "
+            f"Got: {proc.stdout[-500:]}"
+        )
         return SignalResult(
             signal_type="stdout_contains", description=signal.description,
             passed=passed, detail=detail,
@@ -366,23 +404,32 @@ class Verifier:
         )
 
     def _check_file_exists(self, signal: FileExistsSignal) -> SignalResult:
-        """Check that a file exists in the project directory."""
-        target = self.project_dir / signal.file_path
-        passed = target.exists()
-        detail = "" if passed else f"File not found: {signal.file_path}"
+        """Check that a file exists in the project directory.
+
+        Uses safe_output_path to reject absolute paths and .. traversal.
+        """
+        try:
+            resolved = safe_output_path(self.project_dir, signal.file_path)
+            passed = resolved.exists()
+            detail = "" if passed else f"File not found: {signal.file_path}"
+        except PathTraversalError as e:
+            passed = False
+            detail = f"Path rejected: {e}"
         return SignalResult(
             signal_type="file_exists", description=signal.description,
             passed=passed, detail=detail,
         )
 
     def _check_import(self, signal: ImportCheckSignal) -> SignalResult:
-        """Check that a Python module is importable."""
+        """Check that a Python module is importable in the project venv."""
+        # Use project venv python if available, fall back to sys.executable
+        venv_python = self.project_dir / ".venv" / "bin" / "python"
+        python = str(venv_python) if venv_python.exists() else sys.executable
         try:
             proc = subprocess.run(
-                [sys.executable, "-c", f"import {signal.module_name}"],
+                [python, "-c", f"import {signal.module_name}"],
                 cwd=str(self.project_dir),
                 capture_output=True, text=True, timeout=15,
-                env={"PYTHONPATH": str(self.project_dir), "PATH": ""},
             )
             passed = proc.returncode == 0
             detail = "" if passed else proc.stderr[-500:]
@@ -489,12 +536,13 @@ class Verifier:
 
     def _check_schema_valid(self, signal: SchemaValidSignal) -> SignalResult:
         """Run a command, parse stdout as JSON, validate against schema."""
-        argv = [signal.command] + signal.args
-        try:
-            proc = subprocess.run(
-                argv, cwd=str(self.project_dir),
-                capture_output=True, text=True, timeout=60,
+        proc, error = self._safe_execute(signal.command, signal.args, signal.description)
+        if error:
+            return SignalResult(
+                signal_type="schema_valid", description=signal.description,
+                passed=False, detail=error,
             )
+        try:
             if proc.returncode != 0:
                 return SignalResult(
                     signal_type="schema_valid", description=signal.description,
