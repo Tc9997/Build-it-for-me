@@ -8,6 +8,7 @@ the mode modules, not here.
 from __future__ import annotations
 
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -468,13 +469,9 @@ def optimize(
         safe_write_fn(path, content)
         log("optimizer", f"  optimized {path}")
 
-    for dep in result.get("new_dependencies", []):
-        # Strip version specifiers (>=, <=, etc.) to avoid shell metachar rejection.
-        # pip install gets the latest; requirements.txt has the real constraints.
-        import re
-        pkg_name = re.split(r"[><=!~\[]", dep)[0].strip()
-        r = executor.run_command(venv_cmd_fn(f"pip install {pkg_name}"))
-        state.exec_history.append(r)
+    install_dependencies(
+        result.get("new_dependencies", []), executor, venv_cmd_fn, state
+    )
 
     console.print("\n  [bold]Re-running tests after optimization...[/bold]")
     test_cmd = venv_cmd_fn(plan.test_command) if plan else "pytest -v"
@@ -508,11 +505,7 @@ def apply_fix(fix: DebugFix, executor: ExecutorAgent, venv_cmd_fn, safe_write_fn
         safe_write_fn(path, content)
         log("pipeline", f"  patched {path}")
     if fix.new_dependencies:
-        import re
-        for dep in fix.new_dependencies:
-            pkg_name = re.split(r"[><=!~\[]", dep)[0].strip()
-            result = executor.run_command(venv_cmd_fn(f"pip install {pkg_name}"))
-            state.exec_history.append(result)
+        install_dependencies(fix.new_dependencies, executor, venv_cmd_fn, state)
 
 
 def venv_cmd(output_dir: str, cmd: str) -> str:
@@ -523,6 +516,41 @@ def venv_cmd(output_dir: str, cmd: str) -> str:
             if cmd.startswith(tool + " ") or cmd == tool:
                 return str(venv / tool) + cmd[len(tool):]
     return cmd
+
+
+def install_dependencies(
+    deps: list[str],
+    executor: ExecutorAgent,
+    venv_cmd_fn,
+    state: BuildState,
+) -> None:
+    """Install a list of dependency specs safely.
+
+    Strips version specifiers (>=, <=, ~=, !=, [extras]) from dependency
+    strings before passing to pip, because the shell safety checker rejects
+    metacharacters like > and <.
+
+    pip install gets the latest version; the project's requirements.txt or
+    pyproject.toml should carry the real version constraints.
+    """
+    for dep in deps:
+        pkg_name = _strip_version_spec(dep)
+        if not pkg_name:
+            continue
+        result = executor.run_command(venv_cmd_fn(f"pip install {pkg_name}"))
+        state.exec_history.append(result)
+
+
+def _strip_version_spec(dep: str) -> str:
+    """Strip version specifiers and extras from a dependency string.
+
+    'pytest>=7.0'     → 'pytest'
+    'pydantic[email]' → 'pydantic'
+    'uvicorn[standard]>=0.29' → 'uvicorn'
+    'requests'        → 'requests'
+    ''                → ''
+    """
+    return re.split(r"[><=!~\[;]", dep)[0].strip()
 
 
 def read_project_files(output_dir: str) -> dict[str, str]:

@@ -519,3 +519,75 @@ class TestBuilderDependencyContext:
         prompt = agent.call_json.call_args[0][0]
         assert "field_validator" in prompt
         assert "model_dump" in prompt
+
+
+# =========================================================================
+# Dependency installation helper
+# =========================================================================
+
+class TestDependencyInstall:
+    """Centralized dep install strips version specs safely."""
+
+    def test_strip_simple_version(self):
+        from build_loop.common.pipeline import _strip_version_spec
+        assert _strip_version_spec("pytest>=7.0") == "pytest"
+
+    def test_strip_double_equals(self):
+        from build_loop.common.pipeline import _strip_version_spec
+        assert _strip_version_spec("pydantic==2.5.0") == "pydantic"
+
+    def test_strip_tilde(self):
+        from build_loop.common.pipeline import _strip_version_spec
+        assert _strip_version_spec("requests~=2.31") == "requests"
+
+    def test_strip_less_than(self):
+        from build_loop.common.pipeline import _strip_version_spec
+        assert _strip_version_spec("numpy<2.0") == "numpy"
+
+    def test_strip_not_equals(self):
+        from build_loop.common.pipeline import _strip_version_spec
+        assert _strip_version_spec("setuptools!=60.0") == "setuptools"
+
+    def test_strip_extras(self):
+        from build_loop.common.pipeline import _strip_version_spec
+        assert _strip_version_spec("uvicorn[standard]>=0.29") == "uvicorn"
+
+    def test_strip_extras_only(self):
+        from build_loop.common.pipeline import _strip_version_spec
+        assert _strip_version_spec("pydantic[email]") == "pydantic"
+
+    def test_no_version_passthrough(self):
+        from build_loop.common.pipeline import _strip_version_spec
+        assert _strip_version_spec("requests") == "requests"
+
+    def test_empty_string(self):
+        from build_loop.common.pipeline import _strip_version_spec
+        assert _strip_version_spec("") == ""
+
+    def test_complex_spec(self):
+        from build_loop.common.pipeline import _strip_version_spec
+        assert _strip_version_spec("typing-extensions>=4.0,<5.0") == "typing-extensions"
+
+    def test_semicolon_env_marker(self):
+        from build_loop.common.pipeline import _strip_version_spec
+        assert _strip_version_spec('importlib-metadata>=1.0;python_version<"3.8"') == "importlib-metadata"
+
+    def test_install_dependencies_calls_executor(self):
+        from build_loop.common.pipeline import install_dependencies
+        executor = MagicMock()
+        executor.run_command = MagicMock(return_value=MagicMock(success=True))
+        state = BuildState()
+
+        install_dependencies(
+            ["pytest>=7.0", "pydantic[email]>=2.0", "requests"],
+            executor,
+            lambda cmd: cmd,  # identity venv_cmd
+            state,
+        )
+
+        # All three deps installed, version specs stripped
+        calls = executor.run_command.call_args_list
+        assert len(calls) == 3
+        assert calls[0][0][0] == "pip install pytest"
+        assert calls[1][0][0] == "pip install pydantic"
+        assert calls[2][0][0] == "pip install requests"
