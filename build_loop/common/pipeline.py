@@ -420,12 +420,16 @@ def test_and_debug_loop(
             return
 
         project_files = read_files_fn()
-        fix = debugger.run(
-            error=test_result,
-            plan=plan,
-            project_files=project_files,
-            previous_fixes=previous_fixes if previous_fixes else None,
-        )
+        try:
+            fix = debugger.run(
+                error=test_result,
+                plan=plan,
+                project_files=project_files,
+                previous_fixes=previous_fixes if previous_fixes else None,
+            )
+        except Exception as e:
+            console.print(f"  [yellow]Debugger failed: {e} — skipping round[/yellow]")
+            continue
         previous_fixes.append(fix)
         apply_fix(fix, executor, venv_cmd_fn, safe_write_fn, state)
 
