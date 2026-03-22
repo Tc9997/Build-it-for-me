@@ -128,6 +128,50 @@ class TestContractHash:
         assert all(c in "0123456789abcdef" for c in h)
 
 
+class TestBuildOrderCoverage:
+    """build_order must cover exactly the declared module IDs."""
+
+    def test_unscheduled_module_fails(self):
+        """A module in the plan but not in build_order is an error."""
+        contract = _make_contract()
+        plan = _make_plan(
+            build_order=[["mod_a"]],  # mod_b is missing from build_order
+        )
+        result = validate_plan_coverage(plan, contract)
+        assert not result.valid
+        assert any("not in build_order" in e for e in result.errors)
+
+    def test_ghost_module_fails(self):
+        """A build_order ID that doesn't exist in plan modules is an error."""
+        contract = _make_contract()
+        plan = _make_plan(
+            build_order=[["mod_a", "mod_b", "ghost_module"]],
+        )
+        result = validate_plan_coverage(plan, contract)
+        assert not result.valid
+        assert any("ghost_module" in e for e in result.errors)
+
+    def test_duplicate_in_build_order_fails(self):
+        """The same module ID appearing twice in build_order is an error."""
+        contract = _make_contract()
+        plan = _make_plan(
+            build_order=[["mod_a"], ["mod_b", "mod_a"]],  # mod_a appears twice
+        )
+        result = validate_plan_coverage(plan, contract)
+        assert not result.valid
+        assert any("duplicate" in e.lower() for e in result.errors)
+
+    def test_exact_coverage_passes(self):
+        """build_order with exactly the plan's module IDs passes."""
+        contract = _make_contract()
+        plan = _make_plan(
+            build_order=[["mod_a"], ["mod_b"]],
+        )
+        plan.contract_hash = contract.canonical_hash()
+        result = validate_plan_coverage(plan, contract)
+        assert result.valid
+
+
 class TestBuildPlanVersioned:
     """BuildPlan schema_version must be Literal['1']."""
 

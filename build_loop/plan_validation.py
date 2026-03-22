@@ -83,11 +83,18 @@ def validate_plan_coverage(plan: BuildPlan, contract: BuildContract) -> PlanVali
             f"{len(unmapped)} module(s) not mapped to any goal: {sorted(unmapped)}"
         )
 
-    # 5. build_order must reference actual module IDs
+    # 5. build_order must reference actual module IDs, no duplicates
     scheduled_ids = set()
+    seen_in_order: list[str] = []
     for batch in plan.build_order:
         for mid in batch:
+            if mid in scheduled_ids:
+                result.errors.append(
+                    f"build_order contains duplicate '{mid}'"
+                )
+                result.valid = False
             scheduled_ids.add(mid)
+            seen_in_order.append(mid)
             if mid not in module_ids:
                 result.errors.append(
                     f"build_order references '{mid}' which is not in plan modules"

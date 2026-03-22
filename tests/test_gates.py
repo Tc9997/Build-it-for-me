@@ -543,6 +543,49 @@ class TestTemplateErrorHandling:
 # Setup failure stops the pipeline
 # =========================================================================
 
+class TestDuplicateArtifactPaths:
+    """Two artifacts claiming the same path must fail before write."""
+
+    def test_duplicate_file_path_raises(self):
+        from build_loop.common.pipeline import write_project, PipelineError
+
+        state = BuildState()
+        state.artifacts = {
+            "mod_a": BuildArtifact(
+                module_id="mod_a",
+                files={"shared.py": "# from mod_a"},
+            ),
+            "mod_b": BuildArtifact(
+                module_id="mod_b",
+                files={"shared.py": "# from mod_b"},  # same path!
+            ),
+        }
+
+        with pytest.raises(PipelineError, match="Duplicate file path.*shared.py"):
+            write_project(state, "/tmp/test-dup", lambda p, c: None)
+
+    def test_no_duplicate_passes(self):
+        from build_loop.common.pipeline import write_project
+
+        state = BuildState()
+        state.artifacts = {
+            "mod_a": BuildArtifact(
+                module_id="mod_a",
+                files={"mod_a.py": "pass"},
+            ),
+            "mod_b": BuildArtifact(
+                module_id="mod_b",
+                files={"mod_b.py": "pass"},
+            ),
+        }
+
+        # Should not raise
+        written = []
+        write_project(state, "/tmp/test-nodup", lambda p, c: written.append(p))
+        assert "mod_a.py" in written
+        assert "mod_b.py" in written
+
+
 class TestSetupFailureGate:
     """Failed setup commands must raise PipelineError."""
 

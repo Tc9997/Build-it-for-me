@@ -374,17 +374,33 @@ def write_project(
                 safe_write_fn(iface.file_path, iface.code)
                 files_written += 1
 
-    # Collect all files, deduplicating by path. Later sources win:
-    # interfaces < artifacts (sorted by module ID) < integration wiring.
-    # This makes the write order deterministic regardless of parallel build completion order.
+    # Collect all artifact files. Detect duplicate paths across builders.
+    # Integration wiring is the sole owner of shared files (pyproject.toml, README, etc.)
+    # and is allowed to overwrite artifact files.
     all_files: dict[str, str] = {}
+    path_owners: dict[str, str] = {}  # path → module_id for conflict detection
+
     for mid in sorted(state.artifacts.keys()):
         artifact = state.artifacts[mid]
         for path, content in artifact.files.items():
+            if path in path_owners:
+                raise PipelineError(
+                    f"Duplicate file path '{path}' produced by both "
+                    f"'{path_owners[path]}' and '{mid}'. "
+                    f"Builders must not write to shared files."
+                )
             all_files[path] = content
+            path_owners[path] = mid
         for path, content in artifact.tests.items():
+            if path in path_owners:
+                raise PipelineError(
+                    f"Duplicate test path '{path}' produced by both "
+                    f"'{path_owners[path]}' and '{mid}'."
+                )
             all_files[path] = content
+            path_owners[path] = mid
 
+    # Integration wiring overwrites are allowed — integrator owns shared files
     if state.integration and state.integration.wiring_files:
         for path, content in state.integration.wiring_files.items():
             all_files[path] = content
