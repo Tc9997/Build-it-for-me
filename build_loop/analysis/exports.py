@@ -140,42 +140,76 @@ _STDLIB_MODULES = frozenset({
 })
 
 
-def _find_unresolved_imports(exports: ModuleExports, artifact: BuildArtifact) -> list[str]:
-    """Find imports that reference modules not in stdlib or the project itself.
+def _find_unresolved_imports(
+    exports: ModuleExports,
+    artifact: BuildArtifact,
+    known_third_party: frozenset[str] | None = None,
+) -> list[str]:
+    """Find imports of project-internal modules that don't exist in the artifact.
 
-    Returns a list of module references that might be unresolved.
-    This is a heuristic — it can't know about installed third-party packages,
-    but it can catch imports from sibling modules that don't exist in the artifact.
+    Catches: `from src.provider import Foo` when `src/provider.py` doesn't exist.
+
+    Does NOT flag:
+    - Standard library imports
+    - Known third-party packages (pydantic, fastapi, pytest, etc.)
+
+    Returns a list of unresolved import strings.
     """
+    if known_third_party is None:
+        known_third_party = _KNOWN_THIRD_PARTY
+
     unresolved = []
-    # Collect all file-based module paths in the artifact
+
+    # Build the set of module paths that exist in this artifact
     project_modules = set()
     for path in list(artifact.files.keys()) + list(artifact.tests.keys()):
         if path.endswith(".py"):
-            # "src/foo/bar.py" → "src.foo.bar" and "src.foo" and "src"
+            # "src/foo/bar.py" → "src.foo.bar", "src.foo", "src"
             parts = path.replace("/", ".").removesuffix(".py").split(".")
             for i in range(len(parts)):
-                project_modules.add(".".join(parts[:i + 1]))
+                project_modules.add(".".join(parts[: i + 1]))
+            # Also add __init__ package paths
+            # "src/foo/__init__.py" → "src.foo"
+            if parts[-1] == "__init__":
+                project_modules.add(".".join(parts[:-1]))
 
     for imp in exports.import_statements:
-        # Extract the root module name
+        # Parse the import to get the full module path
         if imp.startswith("from "):
-            # "from foo.bar import Baz" → "foo"
+            # "from src.foo import Bar" → module_path = "src.foo"
             module_path = imp.split(" ")[1]
-            root = module_path.split(".")[0]
         elif imp.startswith("import "):
-            root = imp.split(" ")[1].split(".")[0]
+            # "import src.foo" → module_path = "src.foo"
+            module_path = imp.split(" ")[1].split(",")[0].strip()
         else:
             continue
 
-        if root and root not in _STDLIB_MODULES and root not in project_modules:
-            # Could be a third-party package (not necessarily unresolved)
-            # Only flag as unresolved if it looks like an internal project import
-            # that doesn't match any produced file
-            if "." in (imp.split(" ")[1] if imp.startswith("import ") else imp.split(" ")[1]):
-                full_module = imp.split(" ")[1].split(".")[0]
-                # Check if any artifact file matches this root
-                if full_module not in project_modules and full_module not in _STDLIB_MODULES:
-                    pass  # Third-party — can't validate without pip freeze
+        root = module_path.split(".")[0]
+
+        # Skip stdlib and known third-party
+        if root in _STDLIB_MODULES or root in known_third_party:
+            continue
+
+        # Check if this looks like a project-internal import
+        # A dotted import (src.foo.bar) whose root matches a project directory
+        # is internal. A bare import (requests) with no matching project file
+        # is likely third-party — skip it.
+        if root in project_modules:
+            # Internal import — check if the full path resolves
+            if module_path not in project_modules:
+                unresolved.append(imp)
+        # else: bare import not matching any project file — likely third-party, skip
 
     return unresolved
+
+
+# Known third-party packages. Not exhaustive but covers common ones
+# to avoid false positives.
+_KNOWN_THIRD_PARTY = frozenset({
+    "pydantic", "fastapi", "uvicorn", "starlette", "httpx", "requests",
+    "pytest", "click", "typer", "rich", "anthropic", "openai",
+    "sqlalchemy", "alembic", "celery", "redis", "boto3", "flask",
+    "django", "numpy", "pandas", "scipy", "sklearn", "torch",
+    "dotenv", "yaml", "toml", "jinja2", "aiohttp", "websockets",
+    "pydantic_settings", "cryptography", "jwt", "passlib", "bcrypt",
+})

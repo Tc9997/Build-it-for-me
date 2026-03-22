@@ -159,7 +159,7 @@ class TestFrameworkHints:
 # =========================================================================
 
 class TestSyntaxScreening:
-    """Syntax check before LLM review."""
+    """Syntax and import screening before LLM review."""
 
     def test_clean_code_passes(self):
         artifact = BuildArtifact(
@@ -177,6 +177,98 @@ class TestSyntaxScreening:
         issues = _screen_syntax(artifact)
         assert len(issues) > 0
         assert "syntax" in issues[0].lower() or "Syntax" in issues[0]
+
+    def test_unresolved_internal_import_caught(self):
+        """Import of a project-internal module that doesn't exist is caught."""
+        artifact = BuildArtifact(
+            module_id="mod_b",
+            files={
+                "src/__init__.py": "",
+                "src/mod_b.py": "from src.provider import Foo\n",
+                # src/provider.py does NOT exist
+            },
+        )
+        issues = _screen_syntax(artifact)
+        assert any("unresolved" in i.lower() for i in issues)
+        assert any("src.provider" in i for i in issues)
+
+    def test_valid_internal_import_passes(self):
+        """Import of an existing project-internal module is not flagged."""
+        artifact = BuildArtifact(
+            module_id="mod_b",
+            files={
+                "src/__init__.py": "",
+                "src/provider.py": "class Foo: pass\n",
+                "src/consumer.py": "from src.provider import Foo\n",
+            },
+        )
+        issues = _screen_syntax(artifact)
+        assert issues == []
+
+    def test_stdlib_import_not_flagged(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"mod_a.py": "import json\nfrom pathlib import Path\n"},
+        )
+        issues = _screen_syntax(artifact)
+        assert issues == []
+
+    def test_third_party_import_not_flagged(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"mod_a.py": "from pydantic import BaseModel\nimport requests\n"},
+        )
+        issues = _screen_syntax(artifact)
+        assert issues == []
+
+
+class TestUnresolvedImportDetection:
+    """Detailed tests for _find_unresolved_imports."""
+
+    def test_detects_missing_sibling_module(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={
+                "src/__init__.py": "",
+                "src/main.py": "from src.missing_module import Thing\n",
+            },
+        )
+        exports = analyze_artifact(artifact)
+        assert "from src.missing_module import Thing" in exports.unresolved_imports
+
+    def test_existing_sibling_not_flagged(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={
+                "src/__init__.py": "",
+                "src/utils.py": "def helper(): pass\n",
+                "src/main.py": "from src.utils import helper\n",
+            },
+        )
+        exports = analyze_artifact(artifact)
+        assert exports.unresolved_imports == []
+
+    def test_bare_third_party_not_flagged(self):
+        """A bare import like 'import requests' is not flagged as unresolved."""
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={"mod_a.py": "import requests\nfrom fastapi import FastAPI\n"},
+        )
+        exports = analyze_artifact(artifact)
+        assert exports.unresolved_imports == []
+
+    def test_deep_nested_missing_module(self):
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={
+                "pkg/__init__.py": "",
+                "pkg/sub/__init__.py": "",
+                "pkg/sub/real.py": "X = 1\n",
+                "pkg/main.py": "from pkg.sub.fake import Y\n",
+            },
+        )
+        exports = analyze_artifact(artifact)
+        assert any("pkg.sub.fake" in u for u in exports.unresolved_imports)
 
 
 # =========================================================================

@@ -231,14 +231,23 @@ def build_and_review(
 
 
 def _screen_syntax(artifact: BuildArtifact) -> list[str]:
-    """Cheap deterministic syntax check on builder output.
+    """Cheap deterministic screening on builder output.
 
-    Returns a list of syntax error descriptions, or empty if clean.
+    Checks:
+    1. AST parse errors (syntax)
+    2. Unresolved internal imports (project modules that don't exist)
+
+    Returns a list of issue descriptions, or empty if clean.
     """
     exports = analyze_artifact(artifact)
+    issues = []
     if not exports.syntax_valid:
-        return [f"Syntax error: {e}" for e in exports.parse_errors]
-    return []
+        issues.extend(f"Syntax error: {e}" for e in exports.parse_errors)
+    if exports.unresolved_imports:
+        issues.extend(
+            f"Unresolved import: {imp}" for imp in exports.unresolved_imports
+        )
+    return issues
 
 
 def write_project(
