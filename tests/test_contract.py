@@ -164,14 +164,14 @@ class TestSuccessSignalDiscrimination:
                 expect_contains="1.0",
             )
 
-    def test_command_with_spaces_and_args_is_allowed(self):
-        """If args is non-empty, spaces in command could be a path — allow it."""
-        s = CliExitSignal(
-            description="path with space",
-            command="/usr/local/bin/my tool",
-            args=["--version"],
-        )
-        assert " " in s.command  # allowed because args is non-empty
+    def test_command_with_spaces_and_args_also_rejected(self):
+        """Spaces in command are always rejected, even with non-empty args."""
+        with pytest.raises(ValidationError, match="single executable"):
+            CliExitSignal(
+                description="mixed",
+                command="python -m foo",
+                args=["bar"],
+            )
 
     def test_stdout_contains_requires_fields(self):
         with pytest.raises(ValidationError):

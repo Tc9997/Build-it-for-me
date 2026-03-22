@@ -46,8 +46,8 @@ You MUST respond with a single JSON object matching this schema:
     {
       "type": "cli_exit | http_probe | file_exists | stdout_contains | import_check | schema_valid",
       "description": "what this checks",
-      "command": "MUST be a single executable (e.g. 'python'). NEVER put spaces in command.",
-      "args": ["each arg is a separate token. Example: command='python', args=['-m', 'mypackage.cli', 'version']"],
+      "command": "MUST be a single executable with NO spaces (e.g. 'python'). NEVER 'python -m foo'.",
+      "args": ["each arg is a separate token. Examples: args=['-m', 'pkg.cli', 'version'] or args=['-m', 'pkg.cli', 'schema', '--model', 'Foo']"],
       "expect_exit": 0,
       "expect_contains": "optional string",
       "path": "optional — for http_probe",

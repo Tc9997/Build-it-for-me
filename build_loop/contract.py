@@ -49,9 +49,9 @@ class CliExitSignal(StrictModel):
 
     @model_validator(mode="after")
     def validate_command_is_single_token(self):
-        if " " in self.command and not self.args:
+        if " " in self.command:
             raise ValueError(
-                f"command must be a single executable token, not a shell string. "
+                f"command must be a single executable token with no spaces. "
                 f"Got: {self.command!r}. Split into command='python' args=['-m', ...]"
             )
         return self
@@ -71,9 +71,9 @@ class StdoutContainsSignal(StrictModel):
 
     @model_validator(mode="after")
     def validate_command_is_single_token(self):
-        if " " in self.command and not self.args:
+        if " " in self.command:
             raise ValueError(
-                f"command must be a single executable token, not a shell string. "
+                f"command must be a single executable token with no spaces. "
                 f"Got: {self.command!r}. Split into command='python' args=['-m', ...]"
             )
         return self

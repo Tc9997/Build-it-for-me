@@ -115,7 +115,11 @@ class TemplateFirstOrchestrator:
         from build_loop.llm import reset_cost_tracking
         reset_cost_tracking()
 
-        self.state = BuildState.model_validate_json(state_path.read_text())
+        # Load and migrate saved state (fix malformed signals from older runs)
+        import json as _json
+        raw_state = _json.loads(state_path.read_text())
+        _migrate_state(raw_state)
+        self.state = BuildState.model_validate(raw_state)
         console.print(f"[bold]Resuming from phase: {from_phase}[/bold]")
 
         # Reconstruct transient fields from persisted state
@@ -505,6 +509,33 @@ class TemplateFirstOrchestrator:
 
     def _read_files(self) -> dict[str, str]:
         return read_project_files(self.output_dir)
+
+
+# ---------------------------------------------------------------------------
+# State migration
+# ---------------------------------------------------------------------------
+
+def _migrate_state(raw: dict) -> None:
+    """Migrate saved state from older schema versions.
+
+    Fixes malformed success signals where command contains spaces
+    and args is empty (shell-style commands from older spec compiler).
+    """
+    import shlex
+    contract = raw.get("contract", {})
+    if not contract:
+        return
+    data = contract.get("data", {})
+    if not data:
+        return
+    for sig in data.get("success_signals", []):
+        cmd = sig.get("command", "")
+        args = sig.get("args", [])
+        if " " in cmd:
+            # Split shell-style command, prepend extra tokens to args
+            parts = shlex.split(cmd)
+            sig["command"] = parts[0]
+            sig["args"] = parts[1:] + args
 
 
 # ---------------------------------------------------------------------------
