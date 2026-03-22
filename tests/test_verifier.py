@@ -145,6 +145,132 @@ class TestShellStyleCommandNormalization:
         assert result == ["python", "-m", "mypackage.cli"]
 
 
+class TestSafeExecuteRejection:
+    """_safe_execute must reject dangerous commands."""
+
+    def test_rejects_shell_interpreter(self, tmp_path):
+        """Shell interpreters like /bin/sh must be rejected."""
+        v = Verifier(str(tmp_path))
+        proc, error = v._safe_execute("/bin/sh", ["-c", "echo pwned"], "shell test")
+        assert proc is None
+        assert "Rejected" in error
+
+    def test_rejects_python_dash_c(self, tmp_path):
+        """python -c must be rejected (arbitrary code execution)."""
+        v = Verifier(str(tmp_path))
+        proc, error = v._safe_execute("python", ["-c", "import os"], "dash-c test")
+        assert proc is None
+        assert "Rejected" in error
+        assert "-c" in error
+
+    def test_rejects_path_traversal_in_args(self, tmp_path):
+        """../../../etc/passwd in args must be rejected."""
+        v = Verifier(str(tmp_path))
+        proc, error = v._safe_execute("python", ["../../etc/passwd"], "traversal test")
+        assert proc is None
+        assert "traversal" in error.lower()
+
+    def test_rejects_absolute_executable(self, tmp_path):
+        """Absolute paths like /usr/bin/curl must be rejected."""
+        v = Verifier(str(tmp_path))
+        proc, error = v._safe_execute("/usr/bin/curl", ["http://evil.com"], "abs exec test")
+        assert proc is None
+        assert "Rejected" in error
+
+    def test_allows_python_dash_m(self, tmp_path):
+        """python -m <module> must be allowed."""
+        v = Verifier(str(tmp_path))
+        proc, error = v._safe_execute("python", ["-m", "json.tool", "--help"], "python -m test")
+        # Should not be rejected (may fail if json.tool --help doesn't work, but not rejected)
+        assert error is None or "Rejected" not in (error or "")
+
+    def test_allows_venv_executables(self, tmp_path):
+        """Executables under .venv/bin/ must be allowed."""
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        fake_tool = venv_bin / "mytool"
+        fake_tool.write_text("#!/bin/sh\necho ok")
+        fake_tool.chmod(0o755)
+
+        v = Verifier(str(tmp_path))
+        proc, error = v._safe_execute(str(fake_tool), ["--version"], "venv tool test")
+        # Should not be rejected (may fail to execute, but not rejected by policy)
+        assert error is None or "Rejected" not in (error or "")
+
+
+class TestFileExistsPathSafety:
+    """file_exists must reject absolute paths and traversal."""
+
+    def test_rejects_absolute_path(self, tmp_path):
+        """file_exists with /etc/passwd must fail, not check the host file."""
+        contract = _make_contract(success_signals=[
+            FileExistsSignal(description="host file", file_path="/etc/passwd"),
+        ])
+        v = Verifier(str(tmp_path))
+        result = v.run(contract)
+        file_results = [r for r in result.tier2_results if r.signal_type == "file_exists"]
+        assert len(file_results) == 1
+        assert not file_results[0].passed
+        assert "rejected" in file_results[0].detail.lower() or "absolute" in file_results[0].detail.lower()
+
+    def test_rejects_dotdot_traversal(self, tmp_path):
+        """file_exists with ../../etc/passwd must fail."""
+        contract = _make_contract(success_signals=[
+            FileExistsSignal(description="traversal", file_path="../../etc/passwd"),
+        ])
+        v = Verifier(str(tmp_path))
+        result = v.run(contract)
+        file_results = [r for r in result.tier2_results if r.signal_type == "file_exists"]
+        assert not file_results[0].passed
+        assert "rejected" in file_results[0].detail.lower() or "traversal" in file_results[0].detail.lower()
+
+    def test_allows_relative_path(self, tmp_path):
+        """file_exists with a normal relative path works."""
+        (tmp_path / "output.csv").write_text("a,b\n")
+        contract = _make_contract(success_signals=[
+            FileExistsSignal(description="normal", file_path="output.csv"),
+        ])
+        v = Verifier(str(tmp_path))
+        result = v.run(contract)
+        file_results = [r for r in result.tier2_results if r.signal_type == "file_exists"]
+        assert file_results[0].passed
+
+
+class TestImportCheckVenv:
+    """Import check should prefer the project venv python."""
+
+    def test_uses_venv_python_when_available(self, tmp_path):
+        """If .venv/bin/python exists, it should be used for import checks."""
+        # Create a fake venv python that always exits 0
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        fake_python = venv_bin / "python"
+        fake_python.write_text("#!/bin/sh\nexit 0\n")
+        fake_python.chmod(0o755)
+
+        contract = _make_contract(success_signals=[
+            ImportCheckSignal(description="venv import", module_name="anything"),
+        ])
+        v = Verifier(str(tmp_path))
+        result = v.run(contract)
+        # The fake python exits 0, so import "passes" — proves venv python was used
+        import_results = [r for r in result.tier1_results + result.tier2_results
+                          if r.signal_type == "import_check"]
+        assert any(r.passed for r in import_results)
+
+    def test_falls_back_to_sys_executable(self, tmp_path):
+        """Without a venv, sys.executable is used."""
+        # No .venv — should fall back and use sys.executable
+        contract = _make_contract(success_signals=[
+            ImportCheckSignal(description="stdlib import", module_name="json"),
+        ])
+        v = Verifier(str(tmp_path))
+        result = v.run(contract)
+        import_results = [r for r in result.tier1_results + result.tier2_results
+                          if r.signal_type == "import_check"]
+        assert any(r.passed for r in import_results)
+
+
 class TestStdoutContainsSignal:
     def test_stdout_match(self, tmp_path):
         (tmp_path / "hello.py").write_text("print('hello world')\n")
