@@ -159,6 +159,9 @@ class FreeformOrchestrator:
         except (ModuleRejectedError, IntegrationFailedError, PipelineError) as e:
             console.print(f"\n[bold red]PIPELINE STOPPED: {e}[/bold red]")
             save_state(self.state, self.output_dir)
+        except Exception as e:
+            console.print(f"\n[bold red]PIPELINE CRASHED: {type(e).__name__}: {e}[/bold red]")
+            save_state(self.state, self.output_dir)
 
         print_final_report(self.state)
         return self.output_dir
