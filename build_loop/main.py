@@ -69,6 +69,19 @@ Examples:
     architect = ArchitectAgent(output_dir=args.output, mode=mode)
     architect.run(idea)
 
+    # Exit non-zero if the pipeline did not succeed.
+    # Acceptance verdict is the terminal signal; missing acceptance means
+    # the pipeline stopped or crashed before reaching it.
+    state = architect.state
+    if state.acceptance is None:
+        sys.exit(1)
+    if hasattr(state.acceptance.verdict, "value"):
+        verdict = state.acceptance.verdict.value
+    else:
+        verdict = str(state.acceptance.verdict)
+    if verdict != "pass":
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
