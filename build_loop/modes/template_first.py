@@ -479,14 +479,24 @@ class TemplateFirstOrchestrator:
     def _safe_write(self, relative_path: str, content: str) -> None:
         resolved = safe_output_path(self.output_dir, relative_path)
         if self._ownership_manifest:
+            from build_loop.templates.models import FileOwner
             owner = self._ownership_manifest.owner_of(relative_path)
-            if self._ownership_manifest.is_locked(relative_path):
-                if resolved.exists():
-                    # Template already placed this file — skip silently
-                    log("write", f"  skipped {relative_path} (template-locked, already exists)")
+
+            if owner == FileOwner.TEMPLATE_LOCKED and resolved.exists():
+                # Template-locked file already on disk — only skip if identical
+                existing = resolved.read_text()
+                if existing == content:
+                    log("write", f"  skipped {relative_path} (template-locked, identical)")
                     return
-                # Locked path that doesn't exist yet — this is a real violation
-                check_write_allowed(self._ownership_manifest, relative_path)
+                # Content differs — raise, this is a real conflict
+                raise OwnershipViolationError(
+                    f"Cannot overwrite template-locked path '{relative_path}' "
+                    f"with different content. Template version takes precedence."
+                )
+
+            # USER_OWNED always raises (never silently skipped)
+            check_write_allowed(self._ownership_manifest, relative_path)
+
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(content)
 
