@@ -508,7 +508,11 @@ class Verifier:
                 jsonschema.validate(data, signal.json_schema)
                 passed, detail = True, ""
             except ImportError:
-                passed, detail = True, "jsonschema not installed — validated as parseable JSON only"
+                # Cannot validate schema without jsonschema library — fail honestly
+                passed, detail = False, (
+                    "jsonschema library not installed — cannot validate JSON schema. "
+                    "Install with: pip install jsonschema"
+                )
             except jsonschema.ValidationError as e:
                 passed, detail = False, f"Schema validation failed: {e.message}"
         except json.JSONDecodeError as e:

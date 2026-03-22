@@ -83,23 +83,23 @@ class IntegratorAgent(Agent):
         )
 
         if export_metadata:
-            # Compact export summary — handle both dict and ModuleExports
-            export_summary = {}
-            for mid, exports in export_metadata.items():
-                if isinstance(exports, dict):
-                    d = exports
-                elif hasattr(exports, "model_dump"):
-                    d = exports.model_dump()
+            # Compact per-module symbol summary for the integrator prompt
+            symbols_by_module = {}
+            for mid, raw in export_metadata.items():
+                if isinstance(raw, dict):
+                    d = raw
+                elif hasattr(raw, "model_dump"):
+                    d = raw.model_dump()
                 else:
                     continue
-                export_summary[mid] = {
+                symbols_by_module[mid] = {
                     "files": d.get("files", []),
                     "classes": d.get("exported_classes", []),
                     "functions": d.get("exported_functions", []),
                 }
             prompt_parts.append(
                 f"\nEXPORT METADATA (actual symbols per module):\n"
-                f"{json.dumps(export_summary, indent=2)}"
+                f"{json.dumps(symbols_by_module, indent=2)}"
             )
 
         prompt_parts.append(

@@ -69,8 +69,8 @@ def evaluate_policy(
     reasons: list[str] = []
     warnings: list[str] = []
     blocked: list[str] = []
-    skip: list[str] = []
-    confirm: list[str] = []
+    skip: set[str] = set()
+    confirm: set[str] = set()
 
     # ----- Rule: output directory must be writable -----
     if not env.output_dir_writable:
@@ -91,7 +91,7 @@ def evaluate_policy(
             f"Missing required secrets: {sorted(missing_secrets)}. "
             "Set them in environment or .env before execution."
         )
-        confirm.append("setup")
+        confirm.add("setup")
 
     # ----- Rule: capability requirements vs environment -----
     for cap in contract.capability_requirements:
@@ -100,7 +100,7 @@ def evaluate_policy(
             mode = _escalate(mode, AutonomyMode.DEGRADE)
             blocked.append(f"{cap.type.value}:{cap.name}")
             phases_affected = cap.affects_phases or ["setup", "test", "optimize"]
-            skip.extend(phases_affected)
+            skip.update(phases_affected)
             reasons.append(
                 f"Contract requires {cap.type.value} capability '{cap.name}' "
                 f"but it is not available. Phases {phases_affected} will be skipped."
@@ -124,7 +124,7 @@ def evaluate_policy(
             if not tool_available:
                 mode = _escalate(mode, AutonomyMode.DEGRADE)
                 blocked.append(f"system_tool:{tool_name}")
-                skip.append("verify")
+                skip.add("verify")
                 reasons.append(
                     f"Contract has {type(signal).__name__} signals but "
                     f"'{tool_name}' is not available. Verify phase will be skipped."
@@ -145,7 +145,7 @@ def evaluate_policy(
             f"Contract has {len(contract.open_questions)} open questions. "
             "Consider resolving them before building."
         )
-        confirm.append("plan")
+        confirm.add("plan")
 
     # ----- Rule: no goals defined (contract is effectively empty) -----
     if not contract.goals:
@@ -159,15 +159,15 @@ def evaluate_policy(
             "No acceptance criteria defined. Build will proceed but "
             "acceptance testing will be best-effort."
         )
-        confirm.append("acceptance")
+        confirm.add("acceptance")
 
     return PolicyDecision(
         autonomy_mode=mode,
         reasons=reasons,
         warnings=warnings,
         blocked_capabilities=blocked,
-        skip_phases=sorted(set(skip)),  # Deduplicate
-        require_confirmation=sorted(set(confirm)),  # Deduplicate
+        skip_phases=sorted(skip),
+        require_confirmation=sorted(confirm),
     )
 
 

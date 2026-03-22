@@ -66,13 +66,14 @@ def validate_pre_integration(
                 )
                 result.valid = False
 
-    # 3. Same-batch dependency violations — blocking
+    # 3. Same-batch dependency violations (direct + transitive) — blocking
     for mid, spec in module_specs.items():
         if mid not in exports:
             continue
         my_batch = batch_of.get(mid)
         if my_batch is None:
             continue
+        # Check direct dependencies
         for dep_id in spec.dependencies:
             dep_batch = batch_of.get(dep_id)
             if dep_batch is not None and dep_batch == my_batch:
@@ -82,6 +83,19 @@ def validate_pre_integration(
                     f"for same-batch modules."
                 )
                 result.valid = False
+        # Check transitive: if A depends on B and B depends on C,
+        # and A and C are in the same batch, A won't have C's context
+        for dep_id in spec.dependencies:
+            dep_spec = module_specs.get(dep_id)
+            if not dep_spec:
+                continue
+            for transitive_id in dep_spec.dependencies:
+                trans_batch = batch_of.get(transitive_id)
+                if trans_batch is not None and trans_batch == my_batch and transitive_id != mid:
+                    result.warnings.append(
+                        f"Module '{mid}' transitively depends on '{transitive_id}' "
+                        f"(via '{dep_id}') but both are in batch {my_batch + 1}."
+                    )
 
     # 4. Unbuilt dependency — warning
     for mid, spec in module_specs.items():

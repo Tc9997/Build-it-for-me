@@ -337,6 +337,14 @@ def _collect_known_modules(plan: BuildPlan, state: BuildState) -> frozenset[str]
                     modules.add(".".join(parts[:i + 1]))
                 if parts[-1] == "__init__":
                     modules.add(".".join(parts[:-1]))
+                # src/ layout: also add paths without the "src" prefix
+                # so "from mypackage.foo import X" works when file is src/mypackage/foo.py
+                if parts[0] == "src" and len(parts) > 1:
+                    sub = parts[1:]
+                    for i in range(len(sub)):
+                        modules.add(".".join(sub[:i + 1]))
+                    if sub[-1] == "__init__":
+                        modules.add(".".join(sub[:-1]))
 
     # From plan's directory structure (often contains package names)
     if plan and plan.directory_structure:

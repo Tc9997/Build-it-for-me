@@ -89,14 +89,18 @@ class AcceptanceAgent(Agent):
             if result.verdict.value == "pass":
                 result.verdict = AcceptanceVerdict.FAIL
                 result.notes = (
-                    f"Overridden: verifier reported failures. {result.notes}"
+                    f"OVERRIDDEN by verifier: {verification.summary}. "
+                    f"LLM acceptance said pass but verifier is authoritative. "
+                    f"Original notes: {result.notes}"
                 )
 
         # Hard constraint: if verification was never run, verdict is incomplete
         if verification is None:
             result.verdict = AcceptanceVerdict.INCOMPLETE
             result.notes = (
-                f"Verification was skipped — cannot confirm pass. {result.notes}"
+                f"Verification was skipped (degraded mode or not reached). "
+                f"Cannot confirm pass without verifier results. "
+                f"Original notes: {result.notes}"
             )
 
         self.log(
