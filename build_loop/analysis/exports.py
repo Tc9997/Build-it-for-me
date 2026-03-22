@@ -177,11 +177,20 @@ def _find_unresolved_imports(
         # Parse the import to get the full module path
         if imp.startswith("from "):
             # "from src.foo import Bar" → module_path = "src.foo"
-            module_path = imp.split(" ")[1]
+            parts = imp.split()
+            if len(parts) < 2:
+                continue
+            module_path = parts[1]
         elif imp.startswith("import "):
-            # "import src.foo" → module_path = "src.foo"
-            module_path = imp.split(" ")[1].split(",")[0].strip()
+            parts = imp.split()
+            if len(parts) < 2:
+                continue
+            module_path = parts[1].split(",")[0].strip()
         else:
+            continue
+
+        # Skip relative imports (from . import foo, from .. import bar)
+        if module_path.startswith("."):
             continue
 
         root = module_path.split(".")[0]

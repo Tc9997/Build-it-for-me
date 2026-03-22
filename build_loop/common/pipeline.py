@@ -281,9 +281,11 @@ def _screen_syntax(
         for imp in exports.unresolved_imports:
             # Extract module path from import statement
             if imp.startswith("from "):
-                module_path = imp.split(" ")[1]
+                parts = imp.split()
+                module_path = parts[1] if len(parts) > 1 else ""
             elif imp.startswith("import "):
-                module_path = imp.split(" ")[1].split(",")[0].strip()
+                parts = imp.split()
+                module_path = parts[1].split(",")[0].strip() if len(parts) > 1 else ""
             else:
                 truly_unresolved.append(imp)
                 continue

@@ -270,6 +270,19 @@ class TestUnresolvedImportDetection:
         exports = analyze_artifact(artifact)
         assert any("pkg.sub.fake" in u for u in exports.unresolved_imports)
 
+    def test_relative_imports_not_flagged(self):
+        """Relative imports (from . import foo) should never be flagged as unresolved."""
+        artifact = BuildArtifact(
+            module_id="mod_a",
+            files={
+                "pkg/__init__.py": "",
+                "pkg/main.py": "from . import utils\nfrom .. import parent\n",
+                "pkg/utils.py": "X = 1\n",
+            },
+        )
+        exports = analyze_artifact(artifact)
+        assert exports.unresolved_imports == []
+
 
 # =========================================================================
 # Dependency context gathering

@@ -99,6 +99,7 @@ class TemplateFirstOrchestrator:
         self.env_snapshot: EnvironmentSnapshot | None = None
         self.policy_decision: PolicyDecision | None = None
         self._ownership_manifest: OwnershipManifest | None = None
+        self._verification_result = None
 
     def resume(self, from_phase: str) -> str:
         """Resume from a saved phase. Loads state from disk.
