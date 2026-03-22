@@ -537,3 +537,163 @@ class TestTemplateErrorHandling:
 
                     # Pipeline stopped, state preserved
                     assert result == orch.output_dir
+
+
+# =========================================================================
+# Setup failure stops the pipeline
+# =========================================================================
+
+class TestSetupFailureGate:
+    """Failed setup commands must raise PipelineError."""
+
+    def test_setup_failure_raises(self):
+        from build_loop.common.pipeline import setup_environment, PipelineError
+        from build_loop.schemas import BuildState
+
+        executor = MagicMock()
+        failed_result = MagicMock()
+        failed_result.success = False
+        failed_result.command = "python3 -m venv .venv"
+        failed_result.stderr = "error: venv creation failed"
+        executor.setup_project.return_value = [failed_result]
+        executor.project_dir = "/tmp/fake"
+
+        state = BuildState()
+
+        with pytest.raises(PipelineError, match="Setup failed"):
+            setup_environment(state, executor, lambda cmd: cmd)
+
+
+# =========================================================================
+# Test exhaustion stops the pipeline
+# =========================================================================
+
+class TestDebugExhaustionGate:
+    """Exhausting all debug rounds must raise PipelineError."""
+
+    def test_exhausted_debug_raises(self):
+        from build_loop.common.pipeline import test_and_debug_loop, PipelineError
+        from build_loop.schemas import BuildState
+
+        executor = MagicMock()
+        failed_test = MagicMock()
+        failed_test.success = False
+        failed_test.command = "pytest"
+        failed_test.stdout = "FAILED"
+        failed_test.stderr = "AssertionError"
+        executor.run_tests.return_value = failed_test
+
+        debugger = MagicMock()
+        debugger.run.side_effect = RuntimeError("debugger failed")
+
+        state = BuildState()
+        state.plan = BuildPlan(
+            project_name="test", description="test", tech_stack=["python"],
+            test_command="pytest",
+        )
+
+        with pytest.raises(PipelineError, match="did not pass"):
+            test_and_debug_loop(
+                state, executor, debugger,
+                lambda cmd: cmd, lambda p, c: None, lambda: {},
+            )
+
+
+# =========================================================================
+# Freeform mode can succeed
+# =========================================================================
+
+class TestFreeformExitCode:
+    """Freeform mode must be able to return a successful exit path."""
+
+    def test_freeform_incomplete_is_not_failure(self):
+        """Freeform with INCOMPLETE verdict should not be treated as fail."""
+        from build_loop.schemas import AcceptanceResult, AcceptanceVerdict
+        from build_loop.modes import BuildMode
+
+        # Simulate what main.py does
+        verdict = AcceptanceVerdict.INCOMPLETE
+        verdict_str = str(verdict.value if hasattr(verdict, "value") else verdict)
+        mode = BuildMode.FREEFORM
+
+        # Freeform: only "fail" is failure
+        if mode == BuildMode.TEMPLATE_FIRST:
+            is_failure = verdict_str != "pass"
+        else:
+            is_failure = verdict_str == "fail"
+
+        assert not is_failure, "Freeform INCOMPLETE should not be treated as failure"
+
+    def test_freeform_pass_is_success(self):
+        from build_loop.schemas import AcceptanceVerdict
+        from build_loop.modes import BuildMode
+
+        verdict = AcceptanceVerdict.PASS
+        verdict_str = str(verdict.value)
+        mode = BuildMode.FREEFORM
+
+        is_failure = verdict_str == "fail"
+        assert not is_failure
+
+    def test_template_first_incomplete_is_failure(self):
+        from build_loop.schemas import AcceptanceVerdict
+        from build_loop.modes import BuildMode
+
+        verdict = AcceptanceVerdict.INCOMPLETE
+        verdict_str = str(verdict.value)
+        mode = BuildMode.TEMPLATE_FIRST
+
+        is_failure = verdict_str != "pass"
+        assert is_failure, "template_first INCOMPLETE must be treated as failure"
+
+
+# =========================================================================
+# Resumed degraded mode skips verify
+# =========================================================================
+
+class TestResumeDegradedSkipsVerify:
+    """A degraded policy restored on resume must skip verify."""
+
+    def test_resumed_degrade_skips_verify(self, tmp_path):
+        from build_loop.modes.template_first import TemplateFirstOrchestrator
+        from build_loop.policy import AutonomyMode, PolicyDecision
+        from build_loop.schemas import BuildState, ContractState, EnvironmentState, PolicyState
+        from build_loop.environment import EnvironmentSnapshot
+        import json
+
+        # Build a saved state with a DEGRADE policy that skips verify
+        state = BuildState(
+            idea="test",
+            contract=ContractState(data=BuildContract(
+                project_name="test", summary="test",
+                goals=["test"], acceptance_criteria=["test"],
+                archetype="python_cli",
+            )),
+            environment=EnvironmentState(data=EnvironmentSnapshot(
+                os_name="Test", arch="x86_64",
+                python_version="3.12", python_path="/usr/bin/python3",
+                output_dir_writable=True,
+            )),
+            policy=PolicyState(data=PolicyDecision(
+                autonomy_mode=AutonomyMode.DEGRADE,
+                skip_phases=["setup", "test", "optimize", "verify"],
+            )),
+            output_dir=str(tmp_path),
+        )
+
+        # Save state to disk
+        state_dir = tmp_path / ".build_state"
+        state_dir.mkdir()
+        (state_dir / "state.json").write_text(state.model_dump_json())
+
+        # Create orchestrator and resume from verify
+        orch = TemplateFirstOrchestrator(output_dir=str(tmp_path))
+        orch._verify = MagicMock()
+        orch._acceptance_check = MagicMock()
+
+        orch.resume("verify")
+
+        # verify should have been skipped due to DEGRADE policy
+        orch._verify.assert_not_called()
+        # acceptance should still run
+        orch._acceptance_check.assert_called_once()

@@ -92,12 +92,19 @@ Examples:
         architect.run(idea)
 
     # Exit non-zero if the pipeline did not succeed.
+    # template_first requires "pass" (verifier-backed).
+    # freeform accepts "pass" or any non-"fail" verdict (no verifier).
     state = architect.state
     if state.acceptance is None:
         sys.exit(1)
     verdict = str(state.acceptance.verdict.value if hasattr(state.acceptance.verdict, "value") else state.acceptance.verdict)
-    if verdict != "pass":
-        sys.exit(1)
+    if mode == BuildMode.TEMPLATE_FIRST:
+        if verdict != "pass":
+            sys.exit(1)
+    else:
+        # Freeform: fail only on explicit "fail", not "incomplete"
+        if verdict == "fail":
+            sys.exit(1)
 
 
 if __name__ == "__main__":

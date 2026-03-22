@@ -413,15 +413,20 @@ def setup_environment(state: BuildState, executor: ExecutorAgent, venv_cmd_fn) -
         default_setup.append(".venv/bin/pip install pytest")
         results = executor.setup_project(default_setup)
         state.exec_history.extend(results)
-        # Check if venv creation itself failed (first command)
-        if results and not results[0].success:
-            raise PipelineError(f"Setup failed: could not create venv — {results[0].stderr[-200:]}")
+        failed = [r for r in results if not r.success]
+        if failed:
+            raise PipelineError(
+                f"Setup failed: {failed[0].command} — {failed[0].stderr[-200:]}"
+            )
         return
 
     results = executor.setup_project(plan.setup_commands)
     state.exec_history.extend(results)
-    if results and not results[0].success:
-        raise PipelineError(f"Setup failed at first command — {results[0].stderr[-200:]}")
+    failed = [r for r in results if not r.success]
+    if failed:
+        raise PipelineError(
+            f"Setup failed: {failed[0].command} — {failed[0].stderr[-200:]}"
+        )
 
 
 def test_and_debug_loop(
@@ -462,7 +467,7 @@ def test_and_debug_loop(
         previous_fixes.append(fix)
         apply_fix(fix, executor, venv_cmd_fn, safe_write_fn, state)
 
-    console.print(f"  [yellow]Exhausted {MAX_DEBUG_ROUNDS} debug rounds[/yellow]")
+    raise PipelineError(f"Tests did not pass after {MAX_DEBUG_ROUNDS} debug rounds")
 
 
 def optimize(
