@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import py_compile
+import shlex
 import subprocess
 import sys
 import time
@@ -245,9 +246,21 @@ class Verifier:
                 passed=False, detail=f"Cannot execute: {signal}",
             )
 
+    @staticmethod
+    def _normalize_argv(command: str, args: list[str]) -> list[str]:
+        """Normalize a command + args into a proper argv list.
+
+        If command contains spaces and args is empty, the spec compiler
+        likely serialized a shell-style command string. Split it with
+        shlex to get a proper argv.
+        """
+        if " " in command and not args:
+            return shlex.split(command)
+        return [command] + args
+
     def _check_cli_exit(self, signal: CliExitSignal) -> SignalResult:
         """Run a command and check exit code."""
-        argv = [signal.command] + signal.args
+        argv = self._normalize_argv(signal.command, signal.args)
         try:
             proc = subprocess.run(
                 argv, cwd=str(self.project_dir),
@@ -270,7 +283,7 @@ class Verifier:
 
     def _check_stdout_contains(self, signal: StdoutContainsSignal) -> SignalResult:
         """Run a command and check stdout contains expected string."""
-        argv = [signal.command] + signal.args
+        argv = self._normalize_argv(signal.command, signal.args)
         try:
             proc = subprocess.run(
                 argv, cwd=str(self.project_dir),

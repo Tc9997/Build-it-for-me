@@ -98,6 +98,62 @@ class TestCliExitSignal:
         assert not result.tier2_results[0].passed
 
 
+class TestShellStyleCommandNormalization:
+    """Verifier must handle shell-style commands where command contains spaces."""
+
+    def test_cli_exit_with_shell_style_command(self, tmp_path):
+        """command='python ok.py' with empty args should be normalized."""
+        (tmp_path / "ok.py").write_text("pass\n")
+        contract = _make_contract(success_signals=[
+            CliExitSignal(
+                description="shell-style",
+                command=f"{sys.executable} ok.py",  # space in command, no args
+                args=[],
+                expect_exit=0,
+            ),
+        ])
+        v = Verifier(str(tmp_path))
+        result = v.run(contract)
+        assert result.tier2_results[0].passed, f"Failed: {result.tier2_results[0].detail}"
+
+    def test_stdout_contains_with_shell_style_command(self, tmp_path):
+        (tmp_path / "hello.py").write_text("print('hello')\n")
+        contract = _make_contract(success_signals=[
+            StdoutContainsSignal(
+                description="shell-style stdout",
+                command=f"{sys.executable} hello.py",
+                args=[],
+                expect_contains="hello",
+            ),
+        ])
+        v = Verifier(str(tmp_path))
+        result = v.run(contract)
+        assert result.tier2_results[0].passed
+
+    def test_structured_command_still_works(self, tmp_path):
+        """Properly structured command+args still works unchanged."""
+        (tmp_path / "ok.py").write_text("pass\n")
+        contract = _make_contract(success_signals=[
+            CliExitSignal(
+                description="structured",
+                command=sys.executable,
+                args=["ok.py"],
+                expect_exit=0,
+            ),
+        ])
+        v = Verifier(str(tmp_path))
+        result = v.run(contract)
+        assert result.tier2_results[0].passed
+
+    def test_normalize_argv_splits_shell_style(self):
+        result = Verifier._normalize_argv("python -m mypackage.cli version", [])
+        assert result == ["python", "-m", "mypackage.cli", "version"]
+
+    def test_normalize_argv_preserves_structured(self):
+        result = Verifier._normalize_argv("python", ["-m", "mypackage.cli"])
+        assert result == ["python", "-m", "mypackage.cli"]
+
+
 class TestStdoutContainsSignal:
     def test_stdout_match(self, tmp_path):
         (tmp_path / "hello.py").write_text("print('hello world')\n")
