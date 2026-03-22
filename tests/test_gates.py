@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from build_loop.analysis.post_write import PostWriteResult
 from build_loop.agents.architect import (
     ArchitectAgent,
     IntegrationFailedError,
@@ -236,10 +237,11 @@ class TestCheckpointEnforcement:
 
             with patch("build_loop.modes.template_first.build_all"):
                 with patch("build_loop.modes.template_first.write_project"):
-                    with patch("build_loop.modes.template_first.setup_environment") as mock_setup:
-                        with patch("build_loop.modes.template_first.test_and_debug_loop"):
-                            agent.run("test idea")
-                            mock_setup.assert_not_called()
+                    with patch("build_loop.analysis.post_write.run_post_write_checks", return_value=PostWriteResult(passed=True)):
+                        with patch("build_loop.modes.template_first.setup_environment") as mock_setup:
+                            with patch("build_loop.modes.template_first.test_and_debug_loop"):
+                                agent.run("test idea")
+                                mock_setup.assert_not_called()
 
     def test_checkpoint_proceeds_with_confirmation(self):
         confirm_calls = []
@@ -276,14 +278,15 @@ class TestCheckpointEnforcement:
 
             with patch("build_loop.modes.template_first.build_all"):
                 with patch("build_loop.modes.template_first.write_project"):
-                    with patch("build_loop.modes.template_first.setup_environment") as mock_setup:
-                        with patch("build_loop.modes.template_first.test_and_debug_loop"):
-                            with patch("build_loop.modes.template_first.optimize"):
-                                orch._verify = MagicMock()
-                                orch._acceptance_check = MagicMock()
-                                agent.run("test idea")
-                                assert len(confirm_calls) > 0
-                                mock_setup.assert_called_once()
+                    with patch("build_loop.analysis.post_write.run_post_write_checks", return_value=PostWriteResult(passed=True)):
+                        with patch("build_loop.modes.template_first.setup_environment") as mock_setup:
+                            with patch("build_loop.modes.template_first.test_and_debug_loop"):
+                                with patch("build_loop.modes.template_first.optimize"):
+                                    orch._verify = MagicMock()
+                                    orch._acceptance_check = MagicMock()
+                                    agent.run("test idea")
+                                    assert len(confirm_calls) > 0
+                                    mock_setup.assert_called_once()
 
     def test_checkpoint_rejected_stops_pipeline(self):
         confirm_calls = []
@@ -320,10 +323,11 @@ class TestCheckpointEnforcement:
 
             with patch("build_loop.modes.template_first.build_all"):
                 with patch("build_loop.modes.template_first.write_project"):
-                    with patch("build_loop.modes.template_first.setup_environment") as mock_setup:
-                        agent.run("test idea")
-                        assert len(confirm_calls) > 0
-                        mock_setup.assert_not_called()
+                    with patch("build_loop.analysis.post_write.run_post_write_checks", return_value=PostWriteResult(passed=True)):
+                        with patch("build_loop.modes.template_first.setup_environment") as mock_setup:
+                            agent.run("test idea")
+                            assert len(confirm_calls) > 0
+                            mock_setup.assert_not_called()
 
 
 # =========================================================================
@@ -364,18 +368,19 @@ class TestDegradeEnforcement:
 
             with patch("build_loop.modes.template_first.build_all"):
                 with patch("build_loop.modes.template_first.write_project") as mock_write:
-                    with patch("build_loop.modes.template_first.setup_environment") as mock_setup:
-                        with patch("build_loop.modes.template_first.test_and_debug_loop") as mock_test:
-                            with patch("build_loop.modes.template_first.optimize") as mock_opt:
-                                orch._verify = MagicMock()
-                                orch._acceptance_check = MagicMock()
-                                agent.run("test idea")
+                    with patch("build_loop.analysis.post_write.run_post_write_checks", return_value=PostWriteResult(passed=True)):
+                        with patch("build_loop.modes.template_first.setup_environment") as mock_setup:
+                            with patch("build_loop.modes.template_first.test_and_debug_loop") as mock_test:
+                                with patch("build_loop.modes.template_first.optimize") as mock_opt:
+                                    orch._verify = MagicMock()
+                                    orch._acceptance_check = MagicMock()
+                                    agent.run("test idea")
 
-                                mock_write.assert_called_once()
-                                mock_setup.assert_not_called()
-                                mock_test.assert_not_called()
-                                mock_opt.assert_not_called()
-                                orch._acceptance_check.assert_called_once()
+                                    mock_write.assert_called_once()
+                                    mock_setup.assert_not_called()
+                                    mock_test.assert_not_called()
+                                    mock_opt.assert_not_called()
+                                    orch._acceptance_check.assert_called_once()
 
 
 # =========================================================================

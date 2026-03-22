@@ -101,8 +101,13 @@ class TemplateFirstOrchestrator:
         self._ownership_manifest: OwnershipManifest | None = None
 
     def resume(self, from_phase: str) -> str:
-        """Resume from a saved phase. Loads state from disk."""
-        import json as _json
+        """Resume from a saved phase. Loads state from disk.
+
+        Reconstructs transient fields from persisted state:
+        - contract from state.contract
+        - _verification_result from state.verification
+        - _ownership_manifest from .ownership.json on disk
+        """
         state_path = Path(self.output_dir) / ".build_state" / "state.json"
         if not state_path.exists():
             raise PipelineError(f"No saved state at {state_path}")
@@ -110,9 +115,22 @@ class TemplateFirstOrchestrator:
         self.state = BuildState.model_validate_json(state_path.read_text())
         console.print(f"[bold]Resuming from phase: {from_phase}[/bold]")
 
-        # Reconstruct contract from state if available
+        # Reconstruct transient fields from persisted state
         if self.state.contract:
             self.contract = self.state.contract.data
+
+        if self.state.verification:
+            from build_loop.verifier import VerificationResult
+            self._verification_result = VerificationResult(**self.state.verification)
+
+        # Reload ownership manifest from disk if it exists
+        from build_loop.templates.materialize import MANIFEST_FILENAME
+        manifest_path = Path(self.output_dir) / MANIFEST_FILENAME
+        if manifest_path.exists():
+            import json as _json
+            self._ownership_manifest = OwnershipManifest.model_validate_json(
+                manifest_path.read_text()
+            )
 
         try:
             if from_phase == "write":
@@ -127,13 +145,15 @@ class TemplateFirstOrchestrator:
                     console.print(f"  [green]{check}[/green]")
                 for err in pw_result.errors:
                     console.print(f"  [bold red]{err}[/bold red]")
+                if not pw_result.passed:
+                    raise PipelineError(f"Post-write checks failed: {pw_result.errors}")
                 from_phase = "setup"
 
             if from_phase == "setup":
                 phase("10", "SETUP", "Installing dependencies...")
                 setup_environment(self.state, self.executor, self._venv_cmd)
                 save_state(self.state, self.output_dir)
-                from_phase = "test"  # fall through
+                from_phase = "test"
 
             if from_phase == "test":
                 phase("11", "TEST & DEBUG", "Running tests and fixing failures...")
@@ -258,7 +278,7 @@ class TemplateFirstOrchestrator:
             for err in pw_result.errors:
                 console.print(f"  [bold red]{err}[/bold red]")
             if not pw_result.passed:
-                console.print("  [yellow]Post-write checks failed — proceeding but issues may persist[/yellow]")
+                raise PipelineError(f"Post-write checks failed: {pw_result.errors}")
 
             self._checkpoint_gate("setup")
 
