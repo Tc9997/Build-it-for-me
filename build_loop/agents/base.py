@@ -22,22 +22,28 @@ class Agent(ABC):
         console.print(f"[bold cyan][{self.name}][/bold cyan] {msg}")
 
     def call(self, user_msg: str, max_tokens: int = 16384) -> str:
-        self.log(f"thinking...")
-        return llm.call(
-            system=self.system_prompt,
-            messages=[{"role": "user", "content": user_msg}],
-            model=self.model,
-            max_tokens=max_tokens,
-        )
+        self.log("thinking...")
+        try:
+            return llm.call(
+                system=self.system_prompt,
+                messages=[{"role": "user", "content": user_msg}],
+                model=self.model,
+                max_tokens=max_tokens,
+            )
+        except Exception as e:
+            raise RuntimeError(f"[{self.name}] LLM call failed: {e}") from e
 
     def call_json(self, user_msg: str, max_tokens: int = 16384) -> dict:
-        self.log(f"thinking...")
-        return llm.call_json(
-            system=self.system_prompt,
-            messages=[{"role": "user", "content": user_msg}],
-            model=self.model,
-            max_tokens=max_tokens,
-        )
+        self.log("thinking...")
+        try:
+            return llm.call_json(
+                system=self.system_prompt,
+                messages=[{"role": "user", "content": user_msg}],
+                model=self.model,
+                max_tokens=max_tokens,
+            )
+        except Exception as e:
+            raise RuntimeError(f"[{self.name}] LLM call failed: {e}") from e
 
     @abstractmethod
     def run(self, *args, **kwargs):

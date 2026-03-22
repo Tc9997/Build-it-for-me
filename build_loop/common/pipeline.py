@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -38,6 +39,9 @@ from build_loop.schemas import (
 )
 
 console = Console()
+
+# Lock for thread-safe state mutations during parallel builds
+_state_lock = threading.Lock()
 
 MAX_REVIEW_REVISIONS = 3
 MAX_DEBUG_ROUNDS = 5
@@ -110,23 +114,27 @@ def build_all(
                 mid = futures[future]
                 try:
                     artifact, final_review = future.result()
-                    state.artifacts[mid] = artifact
-                    modules[mid].status = TaskStatus.APPROVED
+                    # Thread-safe state mutations
+                    with _state_lock:
+                        state.artifacts[mid] = artifact
+                        modules[mid].status = TaskStatus.APPROVED
 
-                    # Deterministic export analysis on approved artifact
-                    exports = analyze_artifact(artifact)
-                    all_exports[mid] = exports
-                    state.module_exports[mid] = exports.model_dump()
+                        # Deterministic export analysis on approved artifact
+                        exports = analyze_artifact(artifact)
+                        all_exports[mid] = exports
+                        state.module_exports[mid] = exports.model_dump()
                     log("analysis", f"{mid}: {len(exports.exported_classes)} classes, "
                         f"{len(exports.exported_functions)} functions"
                         + (" [syntax errors]" if not exports.syntax_valid else ""))
 
                 except ModuleRejectedError as e:
                     console.print(f"  [bold red]{mid} REJECTED: {e.final_review.issues}[/bold red]")
-                    modules[mid].status = TaskStatus.FAILED
+                    with _state_lock:
+                        modules[mid].status = TaskStatus.FAILED
                 except Exception as e:
                     console.print(f"  [bold red]{mid} failed: {e}[/bold red]")
-                    modules[mid].status = TaskStatus.FAILED
+                    with _state_lock:
+                        modules[mid].status = TaskStatus.FAILED
 
     approved = [m for m in plan.modules if m.status == TaskStatus.APPROVED]
     if not approved:
@@ -205,7 +213,8 @@ def build_and_review(
                 issues=syntax_issues,
                 notes="Deterministic syntax check failed — fix before review",
             )
-            state.reviews.setdefault(module.id, []).append(syntax_feedback)
+            with _state_lock:
+                state.reviews.setdefault(module.id, []).append(syntax_feedback)
             artifact = builder.run(
                 module, plan,
                 revision_feedback=syntax_feedback,
@@ -215,7 +224,8 @@ def build_and_review(
 
         module.status = TaskStatus.IN_REVIEW
         review = reviewer.run(module, artifact, plan)
-        state.reviews.setdefault(module.id, []).append(review)
+        with _state_lock:
+            state.reviews.setdefault(module.id, []).append(review)
         last_review = review
 
         if review.verdict == ReviewVerdict.APPROVE:

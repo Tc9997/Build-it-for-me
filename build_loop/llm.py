@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 
 import anthropic
 
 
 _client: anthropic.Anthropic | None = None
+_client_lock = threading.Lock()
 
 # Per-call cost tracking
 _cost_lock = threading.Lock()
@@ -22,12 +24,17 @@ _COST_PER_M: dict[str, tuple[float, float]] = {
     "claude-haiku-4-5-20251001": (0.80, 4.0),
 }
 
+# Regex to strip markdown code fences (handles ```, ```json, ```python, etc.)
+_FENCE_START = re.compile(r"^```\w*\s*\n?", re.MULTILINE)
+_FENCE_END = re.compile(r"\n?```\s*$", re.MULTILINE)
+
 
 def get_client() -> anthropic.Anthropic:
     global _client
-    if _client is None:
-        _client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    return _client
+    with _client_lock:
+        if _client is None:
+            _client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        return _client
 
 
 def call(
@@ -75,14 +82,28 @@ def call_json(
             f"Last 100 chars: ...{raw[-100:]}"
         )
 
-    # Strip markdown code fences if present
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
+    text = _strip_fences(raw)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"LLM response is not valid JSON: {e}. "
+            f"First 200 chars: {text[:200]}"
+        ) from e
+
+
+def _strip_fences(text: str) -> str:
+    """Strip markdown code fences from LLM output.
+
+    Handles: ```json, ```python, ````, and bare ```.
+    Robust against partial fences, extra backticks, and missing newlines.
+    """
     text = text.strip()
-    return json.loads(text)
+    # Remove leading fence (``` or ```json or ````python etc.)
+    text = _FENCE_START.sub("", text, count=1)
+    # Remove trailing fence
+    text = _FENCE_END.sub("", text, count=1)
+    return text.strip()
 
 
 def _record_cost(model: str, usage) -> None:

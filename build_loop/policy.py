@@ -166,8 +166,8 @@ def evaluate_policy(
         reasons=reasons,
         warnings=warnings,
         blocked_capabilities=blocked,
-        skip_phases=skip,
-        require_confirmation=confirm,
+        skip_phases=sorted(set(skip)),  # Deduplicate
+        require_confirmation=sorted(set(confirm)),  # Deduplicate
     )
 
 

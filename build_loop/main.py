@@ -95,10 +95,7 @@ Examples:
     state = architect.state
     if state.acceptance is None:
         sys.exit(1)
-    if hasattr(state.acceptance.verdict, "value"):
-        verdict = state.acceptance.verdict.value
-    else:
-        verdict = str(state.acceptance.verdict)
+    verdict = str(state.acceptance.verdict.value if hasattr(state.acceptance.verdict, "value") else state.acceptance.verdict)
     if verdict != "pass":
         sys.exit(1)
 

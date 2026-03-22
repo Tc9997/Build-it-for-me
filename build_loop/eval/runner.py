@@ -59,11 +59,8 @@ def run_task(task: EvalTask, mode: BuildMode, output_base: Path) -> EvalRunResul
         result.debug_rounds = state.debug_rounds
 
         if state.acceptance:
-            result.acceptance_verdict = (
-                state.acceptance.verdict.value
-                if hasattr(state.acceptance.verdict, "value")
-                else str(state.acceptance.verdict)
-            )
+            v = state.acceptance.verdict
+            result.acceptance_verdict = str(v.value if hasattr(v, "value") else v)
 
         if state.verification:
             v = state.verification
