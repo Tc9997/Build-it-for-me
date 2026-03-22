@@ -20,6 +20,9 @@ from build_loop.eval.eval_verify import eval_verify
 from build_loop.eval.models import EvalRunResult, EvalSuiteResult, EvalTask
 from build_loop.modes import BuildMode
 
+# Lazy import to avoid eager template registry loading
+ArchitectAgent = None
+
 console = Console()
 
 
@@ -44,7 +47,10 @@ def run_task(task: EvalTask, mode: BuildMode, output_base: Path) -> EvalRunResul
 
     start = time.monotonic()
     try:
-        from build_loop.agents.architect import ArchitectAgent
+        global ArchitectAgent
+        if ArchitectAgent is None:
+            from build_loop.agents.architect import ArchitectAgent as _AA
+            ArchitectAgent = _AA
         agent = ArchitectAgent(output_dir=str(task_dir), mode=mode)
         agent.run(task.idea)
 
@@ -65,12 +71,9 @@ def run_task(task: EvalTask, mode: BuildMode, output_base: Path) -> EvalRunResul
                 v.get("tier1_passed", False) and v.get("tier2_passed", False)
             )
 
-        # Check pipeline_completed by looking for terminal-phase evidence
-        # (acceptance ran, or at least write phase produced files)
-        result.pipeline_completed = (
-            state.acceptance is not None
-            or len(list(task_dir.rglob("*.py"))) > 0
-        )
+        # pipeline_completed: true only if acceptance phase actually ran
+        # (the terminal phase). Partial writes or template-only output don't count.
+        result.pipeline_completed = state.acceptance is not None
 
     except Exception as e:
         result.error = f"{type(e).__name__}: {e}"
@@ -82,13 +85,16 @@ def run_task(task: EvalTask, mode: BuildMode, output_base: Path) -> EvalRunResul
     # SCORING: eval-owned verification against corpus expected_signals
     # This is the authority for pass/fail — same for both modes.
     # ---------------------------------------------------------------
+    # SCORING: eval-owned verification against corpus expected_signals.
+    # Tasks without signals cannot pass — every corpus task must have
+    # at least one signal for the benchmark to be meaningful.
     if task.expected_signals:
         eval_signals = eval_verify(task, task_dir)
         result.signal_results = eval_signals
         result.passed = all(s["passed"] for s in eval_signals)
     else:
-        # No corpus signals — fall back to "did the pipeline complete"
-        result.passed = result.pipeline_completed
+        result.passed = False
+        result.signal_results = [{"type": "none", "description": "No corpus signals defined", "passed": False, "detail": "Task has no expected_signals — cannot score"}]
 
     status = "[green]PASS[/green]" if result.passed else "[red]FAIL[/red]"
     signal_summary = ""
