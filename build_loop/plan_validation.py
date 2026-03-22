@@ -83,4 +83,24 @@ def validate_plan_coverage(plan: BuildPlan, contract: BuildContract) -> PlanVali
             f"{len(unmapped)} module(s) not mapped to any goal: {sorted(unmapped)}"
         )
 
+    # 5. build_order must reference actual module IDs
+    scheduled_ids = set()
+    for batch in plan.build_order:
+        for mid in batch:
+            scheduled_ids.add(mid)
+            if mid not in module_ids:
+                result.errors.append(
+                    f"build_order references '{mid}' which is not in plan modules"
+                )
+                result.valid = False
+
+    # 6. All plan modules must appear in build_order
+    unscheduled = module_ids - scheduled_ids
+    if unscheduled:
+        result.errors.append(
+            f"{len(unscheduled)} module(s) in plan but not in build_order: "
+            f"{sorted(unscheduled)}"
+        )
+        result.valid = False
+
     return result

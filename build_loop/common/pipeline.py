@@ -374,24 +374,30 @@ def write_project(
                 safe_write_fn(iface.file_path, iface.code)
                 files_written += 1
 
-    for artifact in state.artifacts.values():
+    # Collect all files, deduplicating by path. Later sources win:
+    # interfaces < artifacts (sorted by module ID) < integration wiring.
+    # This makes the write order deterministic regardless of parallel build completion order.
+    all_files: dict[str, str] = {}
+    for mid in sorted(state.artifacts.keys()):
+        artifact = state.artifacts[mid]
         for path, content in artifact.files.items():
-            safe_write_fn(path, content)
-            files_written += 1
+            all_files[path] = content
         for path, content in artifact.tests.items():
-            safe_write_fn(path, content)
-            files_written += 1
+            all_files[path] = content
 
     if state.integration and state.integration.wiring_files:
         for path, content in state.integration.wiring_files.items():
-            safe_write_fn(path, content)
-            files_written += 1
+            all_files[path] = content
+
+    for path, content in all_files.items():
+        safe_write_fn(path, content)
+        files_written += 1
 
     log("pipeline", f"wrote {files_written} files to {out}")
 
 
 def setup_environment(state: BuildState, executor: ExecutorAgent, venv_cmd_fn) -> None:
-    """Run project setup commands."""
+    """Run project setup commands. Raises PipelineError if critical setup fails."""
     plan = state.plan
     if not plan or not plan.setup_commands:
         default_setup = [
@@ -403,16 +409,19 @@ def setup_environment(state: BuildState, executor: ExecutorAgent, venv_cmd_fn) -
         if req_path.exists():
             default_setup.append(".venv/bin/pip install -r requirements.txt")
         if pyproject_path.exists():
-            # Editable install picks up deps from pyproject.toml including test deps
             default_setup.append(".venv/bin/pip install -e .")
-        # Always install pytest for the test phase
         default_setup.append(".venv/bin/pip install pytest")
         results = executor.setup_project(default_setup)
         state.exec_history.extend(results)
+        # Check if venv creation itself failed (first command)
+        if results and not results[0].success:
+            raise PipelineError(f"Setup failed: could not create venv — {results[0].stderr[-200:]}")
         return
 
     results = executor.setup_project(plan.setup_commands)
     state.exec_history.extend(results)
+    if results and not results[0].success:
+        raise PipelineError(f"Setup failed at first command — {results[0].stderr[-200:]}")
 
 
 def test_and_debug_loop(

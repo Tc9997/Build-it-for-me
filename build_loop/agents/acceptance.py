@@ -59,6 +59,7 @@ class AcceptanceAgent(Agent):
         project_files: dict[str, str],
         verification=None,
         smoke_result: ExecResult | None = None,
+        require_verification: bool = True,
     ) -> AcceptanceResult:
         prompt_parts = [f"ORIGINAL IDEA:\n{idea}"]
 
@@ -94,8 +95,8 @@ class AcceptanceAgent(Agent):
                     f"Original notes: {result.notes}"
                 )
 
-        # Hard constraint: if verification was never run, verdict is incomplete
-        if verification is None:
+        # Hard constraint: if verification was required but never run, verdict is incomplete
+        if verification is None and require_verification:
             result.verdict = AcceptanceVerdict.INCOMPLETE
             result.notes = (
                 f"Verification was skipped (degraded mode or not reached). "

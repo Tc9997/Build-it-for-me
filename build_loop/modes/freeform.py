@@ -153,8 +153,9 @@ class FreeformOrchestrator:
                 idea=self.state.idea,
                 plan=self.state.plan,
                 project_files=self._read_files(),
-                verification=None,  # No verifier in freeform mode
+                verification=None,
                 smoke_result=smoke_result,
+                require_verification=False,  # Freeform has no verifier — LLM verdict stands
             )
             save_state(self.state, self.output_dir)
 

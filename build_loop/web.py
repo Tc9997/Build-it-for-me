@@ -230,7 +230,10 @@ def fetch_github_file(repo: str, path: str) -> str:
 # ---------------------------------------------------------------------------
 
 def fetch_url(url: str, max_chars: int = 30000) -> FetchedPage:
-    """Fetch a URL and return its text content."""
+    """Fetch a URL and return its text content. Only HTTP/HTTPS allowed."""
+    # Reject non-HTTP schemes (file://, ftp://, gopher://, etc.)
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return FetchedPage(url=url, content=f"Rejected: only http/https URLs are allowed, got: {url}")
     try:
         proc = subprocess.run(
             ["curl", "-sL", "-A", "Mozilla/5.0", "--max-time", "15", url],
