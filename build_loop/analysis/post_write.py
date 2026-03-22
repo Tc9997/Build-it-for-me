@@ -70,15 +70,35 @@ def run_post_write_checks(
         for err in readme_errors:
             result.errors.append(f"README: {err}")
 
-    # 6. Package importable check (after pip install -e . in setup)
+    # NOTE: Package importability is checked in run_post_setup_checks(),
+    # not here. The venv doesn't exist yet at post-write time.
+
+    if result.errors:
+        result.passed = False
+
+    return result
+
+
+def run_post_setup_checks(output_dir: str) -> PostWriteResult:
+    """Run checks that require the venv to exist (after SETUP phase).
+
+    Separated from post-write checks because the venv doesn't exist
+    at post-write time.
+    """
+    result = PostWriteResult()
+    out = Path(output_dir)
+
     venv_python = out / ".venv" / "bin" / "python"
-    if venv_python.exists():
-        # Find the main package directory
-        pkg_dirs = [d for d in out.iterdir()
-                    if d.is_dir() and (d / "__init__.py").exists()
-                    and d.name not in ("tests", "src", ".venv")]
-        for pkg in pkg_dirs:
-            _check_package_import(venv_python, pkg.name, result)
+    if not venv_python.exists():
+        result.checks.append("No venv found — skipping post-setup checks")
+        return result
+
+    # Package importable
+    pkg_dirs = [d for d in out.iterdir()
+                if d.is_dir() and (d / "__init__.py").exists()
+                and d.name not in ("tests", "src", ".venv", "__pycache__", ".git")]
+    for pkg in pkg_dirs:
+        _check_package_import(venv_python, pkg.name, result)
 
     if result.errors:
         result.passed = False
@@ -112,7 +132,16 @@ def _check_entry_point(out: Path, name: str, target: str, result: PostWriteResul
                 f"Entry point '{name}': function '{func_name}' not found in {py_file.relative_to(out)}"
             )
     elif pkg_init.exists():
-        result.checks.append(f"Entry point '{name}': {target} — package exists")
+        # Package exists — check that the function is defined in __init__.py
+        init_content = pkg_init.read_text()
+        if f"def {func_name}" in init_content:
+            result.checks.append(f"Entry point '{name}': {target} — found in __init__.py")
+        else:
+            result.errors.append(
+                f"Entry point '{name}': function '{func_name}' not found in "
+                f"{pkg_init.relative_to(out)}. The entry point targets the package "
+                f"but '{func_name}' is not defined or imported there."
+            )
     else:
         result.errors.append(
             f"Entry point '{name}': module '{module_path}' not found "
@@ -122,22 +151,21 @@ def _check_entry_point(out: Path, name: str, target: str, result: PostWriteResul
 
 def _check_python_cli(out: Path, result: PostWriteResult) -> None:
     """Archetype-specific checks for python_cli projects."""
-    # Must have some kind of entry point (cli.py, main.py, or __main__.py)
-    candidates = [
-        out / "src" / "cli.py",
-        out / "src" / "main.py",
-        out / "main.py",
-    ]
-    # Also check any package directory for cli.py or __main__.py
+    # A valid [project.scripts] entry already proves there's a CLI entry point.
+    # Only check for file-level candidates if no console_scripts entry was validated.
+    if any("Entry point" in c and "found" in c for c in result.checks):
+        return  # Already validated by _check_entry_point
+
+    candidates = [out / "main.py"]
     for d in out.iterdir():
-        if d.is_dir() and (d / "__init__.py").exists() and d.name not in ("tests", ".venv"):
+        if d.is_dir() and (d / "__init__.py").exists() and d.name not in ("tests", ".venv", "__pycache__"):
             candidates.extend([d / "cli.py", d / "__main__.py", d / "main.py"])
 
     found = [c for c in candidates if c.exists()]
     if found:
         result.checks.append(f"CLI entry point found: {found[0].relative_to(out)}")
     else:
-        result.errors.append("No CLI entry point found (cli.py, main.py, or __main__.py)")
+        result.errors.append("No CLI entry point found (cli.py, main.py, __main__.py, or [project.scripts])")
 
 
 def _check_fastapi_service(out: Path, result: PostWriteResult) -> None:

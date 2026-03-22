@@ -313,6 +313,14 @@ class TemplateFirstOrchestrator:
                 phase("10", "SETUP", "Installing dependencies...")
                 setup_environment(self.state, self.executor, self._venv_cmd)
                 save_state(self.state, self.output_dir)
+
+                # Post-setup checks (package importable — requires venv)
+                from build_loop.analysis.post_write import run_post_setup_checks
+                ps_result = run_post_setup_checks(self.output_dir)
+                for check in ps_result.checks:
+                    console.print(f"  [green]{check}[/green]")
+                for err in ps_result.errors:
+                    console.print(f"  [bold red]{err}[/bold red]")
             else:
                 phase("10", "SETUP", "[SKIPPED — degraded mode]")
 
