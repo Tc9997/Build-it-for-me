@@ -3,6 +3,8 @@
 Two modes:
   template_first (default): Productized, narrow. python_cli and fastapi_service.
   freeform: Experimental, broad. Any project type, best-effort.
+
+Supports --resume to restart from a specific phase using saved state.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ Modes:
 Examples:
   build-loop "a CLI to convert CSV to SQL inserts"
   build-loop "a REST API for book reviews" --mode template_first
-  build-loop "scrape wine auctions and recommend" --mode freeform -o ~/wine-bot
+  build-loop --resume setup -o ~/my-project    # resume from setup phase
   build-loop -f idea.txt -o ./my-project
         """,
     )
@@ -46,10 +48,22 @@ Examples:
         default=BuildMode.TEMPLATE_FIRST.value,
         help="Build mode: template_first (default) or freeform (experimental)",
     )
+    parser.add_argument(
+        "--resume",
+        choices=["setup", "test", "verify", "accept"],
+        help="Resume from a phase using saved state (skips research/contract/plan/build)",
+    )
+    parser.add_argument(
+        "--optimize", action="store_true",
+        help="Run optimizer pass (off by default)",
+    )
     args = parser.parse_args()
 
     # Get the idea
-    if args.file:
+    if args.resume:
+        # Resume doesn't need an idea — uses saved state
+        idea = args.resume  # placeholder
+    elif args.file:
         with open(args.file) as f:
             idea = f.read().strip()
     elif args.idea:
@@ -58,7 +72,7 @@ Examples:
         console.print("[bold]What do you want to build?[/bold]")
         idea = input("> ").strip()
 
-    if not idea:
+    if not idea and not args.resume:
         console.print("[red]No idea provided.[/red]")
         sys.exit(1)
 
@@ -66,12 +80,18 @@ Examples:
     if mode == BuildMode.FREEFORM:
         console.print("[bold yellow]Running in freeform (experimental) mode[/bold yellow]")
 
-    architect = ArchitectAgent(output_dir=args.output, mode=mode)
-    architect.run(idea)
+    architect = ArchitectAgent(
+        output_dir=args.output,
+        mode=mode,
+        run_optimizer=args.optimize,
+    )
+
+    if args.resume:
+        architect.resume(args.resume)
+    else:
+        architect.run(idea)
 
     # Exit non-zero if the pipeline did not succeed.
-    # Acceptance verdict is the terminal signal; missing acceptance means
-    # the pipeline stopped or crashed before reaching it.
     state = architect.state
     if state.acceptance is None:
         sys.exit(1)

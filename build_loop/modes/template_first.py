@@ -75,10 +75,11 @@ class TemplateFirstOrchestrator:
     All phase gates are hard. Verifier is the authority.
     """
 
-    def __init__(self, output_dir: str | None = None, confirm_callback=None):
+    def __init__(self, output_dir: str | None = None, confirm_callback=None, run_optimizer: bool = False):
         self.output_dir = os.path.abspath(output_dir or os.path.join(os.getcwd(), "output"))
         self.state = BuildState(output_dir=self.output_dir)
         self._confirm = confirm_callback
+        self._run_optimizer = run_optimizer
 
         # Sub-agents
         self.researcher = ResearcherAgent()
@@ -99,6 +100,57 @@ class TemplateFirstOrchestrator:
         self.policy_decision: PolicyDecision | None = None
         self._ownership_manifest: OwnershipManifest | None = None
 
+    def resume(self, from_phase: str) -> str:
+        """Resume from a saved phase. Loads state from disk."""
+        import json as _json
+        state_path = Path(self.output_dir) / ".build_state" / "state.json"
+        if not state_path.exists():
+            raise PipelineError(f"No saved state at {state_path}")
+
+        self.state = BuildState.model_validate_json(state_path.read_text())
+        console.print(f"[bold]Resuming from phase: {from_phase}[/bold]")
+
+        # Reconstruct contract from state if available
+        if self.state.contract:
+            self.contract = self.state.contract.data
+
+        try:
+            if from_phase == "setup":
+                phase("10", "SETUP", "Installing dependencies...")
+                setup_environment(self.state, self.executor, self._venv_cmd)
+                save_state(self.state, self.output_dir)
+                from_phase = "test"  # fall through
+
+            if from_phase == "test":
+                phase("11", "TEST & DEBUG", "Running tests and fixing failures...")
+                test_and_debug_loop(
+                    self.state, self.executor, self.debugger,
+                    self._venv_cmd, self._safe_write, self._read_files,
+                )
+                save_state(self.state, self.output_dir)
+                from_phase = "verify"
+
+            if from_phase == "verify":
+                phase("12", "VERIFY", "Independent verification...")
+                self._verify()
+                save_state(self.state, self.output_dir)
+                from_phase = "accept"
+
+            if from_phase == "accept":
+                phase("14", "ACCEPTANCE", "Final acceptance...")
+                self._acceptance_check()
+                save_state(self.state, self.output_dir)
+
+        except (ModuleRejectedError, IntegrationFailedError, PipelineError, OwnershipViolationError) as e:
+            console.print(f"\n[bold red]PIPELINE STOPPED: {e}[/bold red]")
+            save_state(self.state, self.output_dir)
+        except Exception as e:
+            console.print(f"\n[bold red]PIPELINE CRASHED: {type(e).__name__}: {e}[/bold red]")
+            save_state(self.state, self.output_dir)
+
+        print_final_report(self.state)
+        return self.output_dir
+
     def run(self, idea: str) -> str:
         """Run the full template-first pipeline. Returns the output directory."""
         self.state.idea = idea
@@ -108,15 +160,15 @@ class TemplateFirstOrchestrator:
         ))
 
         try:
-            # Phase 1: Research
-            phase("1", "RESEARCH", "Investigating feasibility and approach...")
-            self.state.research = self.researcher.run(idea)
+            # Phase 1: Research (light mode for template_first — LLM knowledge only)
+            phase("1", "RESEARCH", "Light research (no web search)...")
+            self.state.research = self.researcher.run(idea, light=True)
             save_state(self.state, self.output_dir)
 
-            # Phase 2: Contract
+            # Phase 2: Contract — compact research summary, not full dump
             phase("2", "CONTRACT", "Compiling build contract...")
-            research_json = json.dumps(self.state.research.model_dump(), indent=2)
-            self.contract = self.spec_compiler.run(idea, research_json)
+            research_summary = _compact_research(self.state.research)
+            self.contract = self.spec_compiler.run(idea, research_summary)
             self.state.contract = ContractState(data=self.contract)
             save_state(self.state, self.output_dir)
 
@@ -157,7 +209,7 @@ class TemplateFirstOrchestrator:
 
             # Phase 6: Plan
             phase("6", "PLAN", "Decomposing into modules and interfaces...")
-            self._plan(research_json)
+            self._plan(research_summary)
             save_state(self.state, self.output_dir)
 
             self._checkpoint_gate("plan")
@@ -210,7 +262,8 @@ class TemplateFirstOrchestrator:
             else:
                 phase("12", "VERIFY", "[SKIPPED — degraded mode]")
 
-            if not self._should_skip("optimize"):
+            # Phase 13: Optimize — skipped by default (opt-in via optimize=True)
+            if self._run_optimizer and not self._should_skip("optimize"):
                 phase("13", "OPTIMIZE", "Optimizing...")
                 optimize(
                     self.state, self.executor, self.optimizer, self.debugger,
@@ -218,7 +271,7 @@ class TemplateFirstOrchestrator:
                 )
                 save_state(self.state, self.output_dir)
             else:
-                phase("13", "OPTIMIZE", "[SKIPPED — degraded mode]")
+                phase("13", "OPTIMIZE", "[SKIPPED]")
 
             self._checkpoint_gate("acceptance")
 
@@ -280,7 +333,7 @@ class TemplateFirstOrchestrator:
     # Plan (contract-driven, template-aware)
     # ------------------------------------------------------------------
 
-    def _plan(self, research_json: str) -> None:
+    def _plan(self, research_summary: str) -> None:
         contract_hash = self.contract.canonical_hash()
         template_files = sorted(self._ownership_manifest.files.keys()) if self._ownership_manifest else []
 
@@ -289,7 +342,7 @@ class TemplateFirstOrchestrator:
             f"{json.dumps(self.contract.model_dump(), indent=2)}\n\n"
             f"TEMPLATE FILES ALREADY IN PROJECT (do not recreate these):\n"
             f"{json.dumps(template_files, indent=2)}\n\n"
-            f"RESEARCH FINDINGS:\n{research_json}"
+            f"RESEARCH SUMMARY:\n{research_summary}"
         )
         self.state.plan = self.planner.run(plan_context)
         if self.contract:
@@ -331,10 +384,13 @@ class TemplateFirstOrchestrator:
             smoke_result = self.executor.smoke_test(run_cmd, run_mode=run_mode)
             self.state.exec_history.append(smoke_result)
 
+        # Only send key files to acceptance — not the whole repo
+        key_files = _select_acceptance_files(self._read_files())
+
         self.state.acceptance = self.acceptance.run(
             idea=self.state.idea,
             plan=self.state.plan,
-            project_files=self._read_files(),
+            project_files=key_files,
             verification=verification,
             smoke_result=smoke_result,
         )
@@ -382,3 +438,58 @@ class TemplateFirstOrchestrator:
 
     def _read_files(self) -> dict[str, str]:
         return read_project_files(self.output_dir)
+
+
+# ---------------------------------------------------------------------------
+# Compact helpers to reduce token cost
+# ---------------------------------------------------------------------------
+
+def _compact_research(research) -> str:
+    """Compact research report for downstream phases.
+
+    Instead of dumping the full research JSON (can be 100k+ chars from
+    web search), extract only the actionable parts.
+    """
+    parts = [f"Stack: {', '.join(research.recommended_stack)}"]
+    for f in research.findings:
+        parts.append(f"- {f.topic}: {f.summary[:200]}")
+        if f.libraries:
+            parts.append(f"  Libraries: {', '.join(f.libraries)}")
+    if research.open_questions:
+        parts.append(f"Open questions: {research.open_questions}")
+    return "\n".join(parts)
+
+
+def _select_acceptance_files(all_files: dict[str, str]) -> dict[str, str]:
+    """Select only key files for acceptance review. Not the whole repo.
+
+    Includes: __init__.py, entry points, config files, README, and
+    any file under 2k chars. Skips large implementation files and tests.
+    Total budget: 100k chars.
+    """
+    KEY_PATTERNS = (
+        "__init__.py", "__main__.py", "main.py", "cli.py", "app.py",
+        "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt",
+        "README.md", "README", ".gitignore", "Dockerfile",
+    )
+    result = {}
+    total = 0
+    budget = 100_000
+
+    # Key files first (always included if they fit)
+    for path, content in sorted(all_files.items()):
+        basename = path.rsplit("/", 1)[-1] if "/" in path else path
+        if basename in KEY_PATTERNS:
+            if total + len(content) < budget:
+                result[path] = content
+                total += len(content)
+
+    # Small files next (< 2k, likely config or glue)
+    for path, content in sorted(all_files.items()):
+        if path in result:
+            continue
+        if len(content) < 2000 and total + len(content) < budget:
+            result[path] = content
+            total += len(content)
+
+    return result

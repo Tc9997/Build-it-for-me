@@ -110,8 +110,28 @@ Rules:
 class ResearcherAgent(Agent):
     name = "researcher"
     system_prompt = SYNTHESIZE_SYSTEM
+    model = "claude-haiku-4-5-20251001"  # Cheap for light research; full uses sonnet for synthesis
 
-    def run(self, idea: str) -> ResearchReport:
+    def run(self, idea: str, light: bool = False) -> ResearchReport:
+        """Run research. light=True skips web search and uses LLM knowledge only."""
+        if light:
+            return self._run_light(idea)
+        return self._run_full(idea)
+
+    def _run_light(self, idea: str) -> ResearchReport:
+        """Light research: LLM knowledge only, no web search. Much cheaper."""
+        self.log("light research (no web search)...")
+        data = self.call_json(
+            f"PROJECT IDEA:\n{idea}\n\n"
+            "Provide your research report based on your training knowledge. "
+            "Do NOT cite specific repos or URLs — just recommend libraries, "
+            "patterns, and approaches you know work."
+        )
+        report = ResearchReport(**data)
+        self.log(f"  {len(report.findings)} findings, stack={report.recommended_stack}")
+        return report
+
+    def _run_full(self, idea: str) -> ResearchReport:
         # Step 1: Generate search queries
         self.log("generating search queries...")
         queries = llm.call_json(
@@ -159,7 +179,12 @@ class ResearcherAgent(Agent):
             f"SEARCH RESULTS:\n{search_json}\n\n"
             f"REPO & DOC CONTENTS:\n{content_json}"
         )
-        data = self.call_json(synthesis_prompt)
+        # Synthesis needs quality — use sonnet even though researcher defaults to haiku
+        data = llm.call_json(
+            system=self.system_prompt,
+            messages=[{"role": "user", "content": synthesis_prompt}],
+            model="claude-sonnet-4-20250514",
+        )
 
         report = ResearchReport(**data)
         self.log(

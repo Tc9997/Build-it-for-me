@@ -25,10 +25,6 @@ class ArchitectAgent:
 
     template_first is the default for supported archetypes.
     freeform is explicit-only and labeled experimental.
-
-    Mode-specific modules are imported lazily so a template registry
-    failure (e.g. missing fixtures, drifted pins) does not break
-    freeform mode.
     """
 
     def __init__(
@@ -36,6 +32,7 @@ class ArchitectAgent:
         output_dir: str | None = None,
         mode: BuildMode = BuildMode.TEMPLATE_FIRST,
         confirm_callback=None,
+        run_optimizer: bool = False,
     ):
         self.mode = mode
         self.output_dir = output_dir
@@ -47,6 +44,7 @@ class ArchitectAgent:
             self._orchestrator = TemplateFirstOrchestrator(
                 output_dir=output_dir,
                 confirm_callback=confirm_callback,
+                run_optimizer=run_optimizer,
             )
         elif mode == BuildMode.FREEFORM:
             from build_loop.modes.freeform import FreeformOrchestrator
@@ -56,7 +54,6 @@ class ArchitectAgent:
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
-        # Expose state for test compatibility
         self.state = self._orchestrator.state
 
     @property
@@ -72,8 +69,20 @@ class ArchitectAgent:
         return getattr(self._orchestrator, "policy_decision", None)
 
     def run(self, idea: str) -> str:
-        """Run the build pipeline in the configured mode."""
+        """Run the full build pipeline."""
         result = self._orchestrator.run(idea)
+        self.state = self._orchestrator.state
+        return result
+
+    def resume(self, from_phase: str) -> str:
+        """Resume from a specific phase using saved state.
+
+        Supported phases: setup, test, verify, accept
+        Loads state from .build_state/state.json in the output directory.
+        """
+        if not hasattr(self._orchestrator, "resume"):
+            raise PipelineError(f"Resume not supported in {self.mode.value} mode")
+        result = self._orchestrator.resume(from_phase)
         self.state = self._orchestrator.state
         return result
 

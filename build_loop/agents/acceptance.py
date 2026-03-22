@@ -50,6 +50,7 @@ Rules:
 class AcceptanceAgent(Agent):
     name = "acceptance"
     system_prompt = SYSTEM
+    model = "claude-haiku-4-5-20251001"  # Cheap — verifier is the authority, acceptance is residual
 
     def run(
         self,
