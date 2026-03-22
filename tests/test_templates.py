@@ -41,6 +41,22 @@ class TestTemplatePinning:
         entry = resolve("python_cli")
         assert verify_commit(entry)
 
+    def test_pycache_does_not_change_hash(self, tmp_path):
+        """Transient __pycache__/x.pyc must not affect the computed hash."""
+        entry = resolve("python_cli")
+        clean = tmp_path / "clean"
+        shutil.copytree(entry.source_path, clean)
+
+        hash_before = _compute_content_hash(clean)
+
+        # Add a __pycache__ dir with a .pyc file
+        cache_dir = clean / "__pycache__"
+        cache_dir.mkdir()
+        (cache_dir / "module.cpython-312.pyc").write_bytes(b"\x00" * 100)
+
+        hash_after = _compute_content_hash(clean)
+        assert hash_before == hash_after, "Hash changed due to __pycache__ — transient files must be excluded"
+
     def test_tampered_fixture_fails_verification(self, tmp_path):
         """If fixture content changes, verification must fail."""
         entry = resolve("python_cli")
